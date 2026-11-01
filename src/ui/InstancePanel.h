@@ -56,6 +56,8 @@ public:
     InstanceId getSelectedInstance() const { return selectedId; }
     juce::MidiKeyboardState& getKeyboardState() noexcept { return keyboardState; }
     void panic();
+    // Re-reads every row from the graph (gain, mute, name, state): changes made by the API.
+    void refreshRows() { updateRows(); }
 
     // "Agregar instancia…" window (non-modal). getAddDialog() is null when closed.
     void showAddDialog();

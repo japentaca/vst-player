@@ -489,6 +489,7 @@ void ProjectController::restoreState (juce::AudioPluginInstance& plugin, const p
 
 void ProjectController::finishLoading()
 {
+    ++loadSerial;
     openEditorAfterLoad.clear();
     sendChangeMessage();
 

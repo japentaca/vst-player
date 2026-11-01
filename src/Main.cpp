@@ -1,5 +1,6 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 
+#include "api/ApiController.h"
 #include "app/AppSettings.h"
 #include "app/CommandLine.h"
 #include "app/InstanceSelfTest.h"
@@ -11,6 +12,7 @@
 #include "engine/PluginManager.h"
 #include "project/ProjectController.h"
 #include "ui/InstancePanel.h"
+#include "ui/MainContent.h"
 #include "ui/Theme.h"
 
 namespace vstplayer
@@ -29,7 +31,7 @@ public:
     {
         const auto args = getCommandLineParameterArray();
         return cli::detectMode (args) != cli::Mode::gui || args.contains (kInstanceSelfTestFlag)
-               || args.contains (kMidiSelfTestFlag) || args.contains (kProjectSelfTestFlag) || args.contains (kUiSelfTestFlag);
+               || args.contains (kMidiSelfTestFlag) || args.contains (kProjectSelfTestFlag) || args.contains (kUiSelfTestFlag) || args.contains (kApiTestFlag);
     }
 
     void initialise (const juce::String&) override
@@ -52,7 +54,9 @@ public:
         // The self-test changes the audio device temporarily: never persist that (nor the
         // window state).
         isSelfTest = args.contains (kInstanceSelfTestFlag) || args.contains (kMidiSelfTestFlag)
-                     || args.contains (kProjectSelfTestFlag) || args.contains (kUiSelfTestFlag);
+                     || args.contains (kProjectSelfTestFlag) || args.contains (kUiSelfTestFlag) || args.contains (kApiTestFlag);
+        const auto isApiTestOnly = args.contains (kApiTestFlag) && ! args.contains (kInstanceSelfTestFlag) && ! args.contains (kMidiSelfTestFlag)
+                                   && ! args.contains (kProjectSelfTestFlag) && ! args.contains (kUiSelfTestFlag);
 
         // Dark theme for every window (main window, dialogs, plugin list, MIDI ports).
         lookAndFeel = std::make_unique<DarkLookAndFeel>();
@@ -106,6 +110,8 @@ public:
         if (args.contains ("--show-plugins") || args.contains ("--gui-scan"))
             mainWindow->showPluginList (args.contains ("--gui-scan"));
 
+        startApi (args);
+
         if (audioError.isNotEmpty())
         {
             // Non-modal: shown in the main window status line (and on stdout if redirected).
@@ -117,7 +123,7 @@ public:
         if (const auto projectFile = findProjectArgument (args); projectFile != juce::File())
             mainWindow->openProject (projectFile);
 
-        if (isSelfTest)
+        if (isSelfTest && ! isApiTestOnly)
         {
             const auto pluginIndex = args.indexOf ("--plugin");
             const auto singlePlugin = pluginIndex >= 0 && pluginIndex + 1 < args.size() ? args[pluginIndex + 1].unquoted() : juce::String();
@@ -140,6 +146,15 @@ public:
     {
         // Every quit path (close button, Archivo > Salir, WM_CLOSE, logoff) ends here.
         selfTest = nullptr;
+
+        // The API first: stops its network threads before anything they use goes away.
+        if (mainWindow != nullptr)
+        {
+            mainWindow->getMainContent().apiStatusText = nullptr;
+            mainWindow->getMainContent().apiHasError = nullptr;
+        }
+
+        apiController = nullptr;
 
         if (mainWindow != nullptr && ! isSelfTest)
             mainWindow->saveWindowState();
@@ -199,7 +214,7 @@ private:
     static juce::File findProjectArgument (const juce::StringArray& args)
     {
         static const juce::StringArray optionsWithValue { "--plugin", "--project-data-dir", "--project-test-dir", kProjectSelfTestFlag,
-                                                          "--type" };
+                                                          "--type", "--api-port", "--api-token" };
 
         for (int i = 0; i < args.size(); ++i)
         {
@@ -213,6 +228,75 @@ private:
         }
 
         return {};
+    }
+
+    // Local API (stage 7). settings.xml: apiEnabled (default true), apiPort (default 9471),
+    // apiToken (default empty = no token); nothing is written there, so the defaults work without
+    // configuration. Command line: --api-port <n>, --api-token <t>, --no-api. The self-tests run
+    // without the API unless --api-port is given (a VstPlayer already open keeps its port).
+    void startApi (const juce::StringArray& args)
+    {
+        auto& props = settings->getProperties();
+        ApiController::Config config;
+        config.enabled = props.getBoolValue ("apiEnabled", true);
+        config.port = props.getIntValue ("apiPort", ApiController::kDefaultPort);
+        config.token = props.getValue ("apiToken");
+
+        const auto portArg = valueOf (args, "--api-port");
+
+        if (portArg.isNotEmpty())
+        {
+            config.port = portArg.getIntValue();
+            config.enabled = true;
+        }
+        else if (isSelfTest)
+        {
+            config.enabled = false;
+        }
+
+        if (args.contains ("--api-token"))
+            config.token = valueOf (args, "--api-token");
+
+        if (args.contains ("--no-api") || config.port <= 0 || config.port > 65535)
+            config.enabled = false;
+
+        apiController = std::make_unique<ApiController> (*audioEngine, *instanceGraph, *midiRouter, *projectController);
+
+        auto& content = mainWindow->getMainContent();
+        apiController->onStatusMessage = [this] (const juce::String& text, bool isError)
+        {
+            if (mainWindow != nullptr)
+                mainWindow->getMainContent().setStatus (text, isError);
+
+            if (isSelfTest)
+                cli::print ("  [api] " + text);
+        };
+        apiController->panicAction = [this]
+        {
+            if (mainWindow != nullptr)
+                mainWindow->getInstancePanel().panic();
+        };
+        apiController->onInstanceValuesChanged = [this]
+        {
+            if (mainWindow != nullptr)
+                mainWindow->getInstancePanel().refreshRows();
+        };
+        apiController->getDefaultProjectFolder = [this]
+        {
+            const juce::File folder (settings->getProperties().getValue ("lastProjectFolder"));
+            return folder.isDirectory() ? folder : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+        };
+
+        auto* api = apiController.get();
+        content.apiStatusText = [api] { return api->getStatusText(); };
+        content.apiHasError = [api] { return api->getError().isNotEmpty(); };
+
+        if (! apiController->start (config))
+            cli::print ("API error: " + apiController->getError());
+        else if (config.enabled)
+            cli::print ("API: http://" + juce::String (ApiController::kHost) + ":" + juce::String (config.port)
+                        + "/api  ws://" + juce::String (ApiController::kHost) + ":" + juce::String (config.port) + "/ws"
+                        + (config.token.isNotEmpty() ? "  (con token)" : ""));
     }
 
     void runCommandLineMode (cli::Mode mode, const juce::StringArray& args)
@@ -272,6 +356,7 @@ private:
     std::unique_ptr<MidiRouter> midiRouter;
     std::unique_ptr<ProjectController> projectController;
     std::unique_ptr<MainWindow> mainWindow;
+    std::unique_ptr<ApiController> apiController;
     std::unique_ptr<InstanceSelfTest> selfTest;
     bool isSelfTest = false;
 
@@ -279,6 +364,9 @@ private:
     static constexpr const char* kMidiSelfTestFlag = "--midi-selftest";
     static constexpr const char* kProjectSelfTestFlag = "--project-selftest";
     static constexpr const char* kUiSelfTestFlag = "--ui-selftest";
+    // GUI without self-test steps for the API test (tools/run-api-test.ps1): nothing is persisted,
+    // no dialogs, the unsaved-changes question answers "No guardar".
+    static constexpr const char* kApiTestFlag = "--api-test";
     static constexpr const char* kKeyboardVisibleKey = "keyboardVisible";
 };
 

@@ -82,6 +82,13 @@ MainContent::MainContent (AudioEngine& e, PluginManager& p, InstanceGraph& i, Mi
     hintLabel.setText (juce::String::fromUTF8 ("Esc pánico · Ctrl+S guardar · Ctrl+O abrir · Ctrl+N nuevo"), juce::dontSendNotification);
     addAndMakeVisible (hintLabel);
 
+    apiLabel.setFont (juce::FontOptions (12.5f));
+    apiLabel.setColour (juce::Label::textColourId, theme::textDim);
+    apiLabel.setJustificationType (juce::Justification::centredRight);
+    apiLabel.setMinimumHorizontalScale (0.8f);
+    apiLabel.setTooltip (juce::String::fromUTF8 ("API local para páginas web: HTTP POST /api y WebSocket /ws (ver docs/api.md). Clientes = WebSockets abiertos."));
+    addAndMakeVisible (apiLabel);
+
     engine.getDeviceManager().addChangeListener (this);
     plugins.getKnownPluginList().addChangeListener (this);
 
@@ -152,7 +159,9 @@ void MainContent::resized()
 
     // Status bar.
     auto status = area.removeFromBottom (kStatusHeight).reduced (8, 3);
-    hintLabel.setBounds (status.removeFromRight (juce::jmin (380, status.getWidth() / 3)));
+    apiLabel.setBounds (status.removeFromRight (juce::jmin (210, status.getWidth() / 5)));
+    status.removeFromRight (8);
+    hintLabel.setBounds (status.removeFromRight (juce::jmin (300, status.getWidth() / 3)));
     status.removeFromRight (8);
     progressBar.setBounds (status.removeFromRight (110).reduced (0, 2));
     status.removeFromRight (6);
@@ -289,6 +298,12 @@ void MainContent::timerCallback()
     cpuLabel.setColour (juce::Label::textColourId, cpu > 80.0 ? theme::error : cpu > 50.0 ? theme::warning : theme::text);
 
     refreshProgress();
+
+    if (apiStatusText)
+    {
+        apiLabel.setText (apiStatusText(), juce::dontSendNotification);
+        apiLabel.setColour (juce::Label::textColourId, apiHasError && apiHasError() ? theme::error : theme::textDim);
+    }
 }
 
 } // namespace vstplayer

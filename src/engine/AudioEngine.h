@@ -2,6 +2,8 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include <atomic>
+
 namespace vstplayer
 {
 
@@ -52,6 +54,20 @@ public:
     juce::StringArray applyDeviceSetup (const juce::String& typeName, const juce::String& outputDevice, double sampleRate,
                                         int bufferSize);
 
+    // Audio callback timing since the last call (then reset). Any thread.
+    struct CallbackStats
+    {
+        juce::int64 callbacks = 0;     // device callbacks measured
+        double averageMs = 0.0;        // mean time spent in the callback (whole graph)
+        double maxMs = 0.0;            // slowest callback
+        double budgetMs = 0.0;         // block duration (buffer / sample rate) of the last callback
+        juce::int64 overBudget = 0;    // callbacks that took longer than their block duration
+        juce::int64 totalCallbacks = 0; // since the device started (not reset)
+    };
+    CallbackStats getAndResetCallbackStats();
+    // Buffer underruns / overruns reported by the device (-1 if the driver does not count them).
+    int getXRunCount() const { return deviceManager.getXRunCount(); }
+
     // Writes the current device setup into settings (no-op when persistState is false).
     void saveDeviceState();
 
@@ -69,6 +85,26 @@ private:
     juce::AudioDeviceManager deviceManager;
     juce::AudioProcessorGraph graph;
     juce::AudioProcessorPlayer player;
+
+    // Forwards the device callback to the player and measures how long it takes.
+    class TimedCallback final : public juce::AudioIODeviceCallback
+    {
+    public:
+        explicit TimedCallback (juce::AudioIODeviceCallback& t) : target (t) {}
+
+        void audioDeviceIOCallbackWithContext (const float* const* in, int numIn, float* const* out, int numOut, int numSamples,
+                                               const juce::AudioIODeviceCallbackContext& context) override;
+        void audioDeviceAboutToStart (juce::AudioIODevice* device) override;
+        void audioDeviceStopped() override { target.audioDeviceStopped(); }
+        void audioDeviceError (const juce::String& message) override { target.audioDeviceError (message); }
+
+        juce::AudioIODeviceCallback& target;
+        std::atomic<double> sampleRate { 48000.0 };
+        std::atomic<juce::int64> count { 0 }, total { 0 }, overBudget { 0 };
+        std::atomic<double> sumMs { 0.0 }, maxMs { 0.0 }, budgetMs { 0.0 };
+    };
+
+    TimedCallback timedCallback { player };
 
     juce::AudioProcessorGraph::Node::Ptr outputNode;
     juce::AudioProcessorGraph::Node::Ptr mixerNode;

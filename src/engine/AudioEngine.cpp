@@ -26,7 +26,7 @@ AudioEngine::~AudioEngine()
     deviceManager.removeChangeListener (this);
 
     if (callbackAttached)
-        deviceManager.removeAudioCallback (&player);
+        deviceManager.removeAudioCallback (&timedCallback);
 
     player.setProcessor (nullptr);
     deviceManager.closeAudioDevice();
@@ -70,7 +70,7 @@ juce::String AudioEngine::initialise()
     }
 
     player.setProcessor (&graph);
-    deviceManager.addAudioCallback (&player);
+    deviceManager.addAudioCallback (&timedCallback);
     callbackAttached = true;
 
     deviceManager.addChangeListener (this);
@@ -233,6 +233,53 @@ void AudioEngine::saveDeviceState()
 void AudioEngine::changeListenerCallback (juce::ChangeBroadcaster*)
 {
     saveDeviceState();
+}
+
+} // namespace vstplayer
+
+namespace vstplayer
+{
+
+//==============================================================================
+void AudioEngine::TimedCallback::audioDeviceAboutToStart (juce::AudioIODevice* device)
+{
+    if (device != nullptr && device->getCurrentSampleRate() > 0.0)
+        sampleRate.store (device->getCurrentSampleRate());
+
+    target.audioDeviceAboutToStart (device);
+}
+
+void AudioEngine::TimedCallback::audioDeviceIOCallbackWithContext (const float* const* in, int numIn, float* const* out, int numOut,
+                                                                   int numSamples, const juce::AudioIODeviceCallbackContext& context)
+{
+    const auto start = juce::Time::getHighResolutionTicks();
+    target.audioDeviceIOCallbackWithContext (in, numIn, out, numOut, numSamples, context);
+    const auto ms = juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - start) * 1000.0;
+
+    const auto budget = 1000.0 * numSamples / sampleRate.load();
+    budgetMs.store (budget);
+    count.fetch_add (1);
+    total.fetch_add (1);
+    sumMs.store (sumMs.load() + ms); // single writer (the audio thread)
+
+    if (ms > maxMs.load())
+        maxMs.store (ms);
+
+    if (ms > budget)
+        overBudget.fetch_add (1);
+}
+
+AudioEngine::CallbackStats AudioEngine::getAndResetCallbackStats()
+{
+    CallbackStats s;
+    s.callbacks = timedCallback.count.exchange (0);
+    const auto sum = timedCallback.sumMs.exchange (0.0);
+    s.averageMs = s.callbacks > 0 ? sum / (double) s.callbacks : 0.0;
+    s.maxMs = timedCallback.maxMs.exchange (0.0);
+    s.budgetMs = timedCallback.budgetMs.load();
+    s.overBudget = timedCallback.overBudget.exchange (0);
+    s.totalCallbacks = timedCallback.total.load();
+    return s;
 }
 
 } // namespace vstplayer

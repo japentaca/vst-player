@@ -802,3 +802,191 @@ cambiados `CMakeLists.txt`, `src/Main.cpp`, `src/app/MainWindow.{h,cpp}`, `src/a
   7. Botón del dispositivo de audio → configuración de audio; "Puertos MIDI…"; "Plugins…" → Escanear: la barra
      de estado dice "Escaneando plugins…" y la ventana sigue respondiendo.
 - `Translations.cpp` conserva la traducción de "Plays a test tone" (texto de JUCE, inofensivo).
+
+## Etapa 7 — API local para los proyectos web  (2026-11-01)
+**Hecho:**
+- **Librería: sólo cpp-httplib `v0.64.0`** (`cmake/httplib.cmake`, FetchContent con tag fijo, `SYSTEM`,
+  header-only, sin OpenSSL/zlib/brotli/zstd). **No se usó IXWebSocket**: cpp-httplib trae servidor
+  WebSocket desde hace varias versiones, así que HTTP y WebSocket comparten **un solo puerto** (el plan
+  pide "puerto configurable (default 9471)") con una sola dependencia. IXWebSocket habría obligado a un
+  segundo puerto (su servidor HTTP y su servidor WS son sockets distintos) y a compilar una librería más.
+  `httplib.h` se incluye sólo en `src/api/ApiServer.cpp`, que no incluye JUCE (Winsock y `windows.h`
+  de JUCE no se cruzan).
+- `src/api/ApiServer.{h,cpp}` (red, sin JUCE): escucha **sólo en `127.0.0.1`**, `POST /api`,
+  `GET /api/status`, `GET /`, `OPTIONS` (preflight), WebSocket en `/ws` y `/`. CORS
+  `Access-Control-Allow-Origin: *` (+ `Allow-Private-Network` para Chrome) en todas las respuestas.
+  Token opcional (`?token=` o cabecera `X-Api-Token`): 401 por HTTP; por WebSocket manda el error y
+  cierra con 1008. Los eventos salen por una cola + hilo emisor (un cliente lento no frena al hilo que
+  los produce). Al detenerse, los bucles de WebSocket (lectura con timeout de 250 ms) terminan solos y
+  se espera a todos los hilos.
+- `src/api/ApiController.{h,cpp}` (comandos, documentados en **`docs/api.md`**): `status`,
+  `loadProject` (responde cuando terminaron de cargar todas las instancias; 409 `unsavedChanges` si hay
+  cambios sin guardar salvo `discardChanges: true`), `listProjects`, `saveProject` (con o sin `path`),
+  `listParams` (`index, name, id, value, text, label, default, steps, automatable`; `filter`, `offset`,
+  `limit`, `refresh`), `getParam`, `setParam` (por `index`, `name` o `paramId`), `setGain`, `setMute`,
+  `panic` (el mismo del botón), `listPrograms`, `setProgram`, `midi` (uno o varios mensajes de canal),
+  y de diagnóstico `levels` (pico por instancia y mezcla) y `audioStats` (callbacks, tiempo del
+  callback, xruns, CPU). `instanceId` acepta también el nombre de la instancia. Respuestas
+  `{ok, ..., cmd, id}` / `{ok:false, code, error}` con códigos HTTP 400/401/404/409/500/503/504.
+  - Hilos: los comandos que tocan grafo/router/proyecto van al hilo de mensajes con
+    `MessageManager::callAsync` y el hilo de red espera la respuesta (con timeout y corte si la app
+    se cierra). `setParam` y `midi` corren en el hilo de red (`setValueNotifyingHost` /
+    `MidiMessageCollector`), con punteros de una tabla que el hilo de mensajes actualiza bajo lock
+    **antes** de quitar los nodos de una instancia. En `setParam` no se pide `getText` (en VST3 toma un
+    `MessageManagerLock` y podría trabarse contra el hilo de mensajes).
+  - Eventos por WebSocket: `instanceAdded`, `instanceLoaded` (extra), `instanceRemoved`, `paramChanged`
+    (banderas atómicas por parámetro marcadas desde cualquier hilo, agrupadas por un timer de **20 Hz**
+    por instancia, máx. 256 por evento), `projectLoaded`, `midiActivity` (≤ 20 Hz por instancia).
+- **Caché de parámetros (aviso de la etapa 5)**: confirmado y documentado en `docs/api.md` → "Valores
+  viejos". Con Dexed, después de `setProgram` (igual que desde su editor) `listParams` devuelve los
+  valores del programa anterior y no hay `paramChanged` (medido: 0 de 2238 cambian; con refresh 86).
+  `listParams` con `"refresh": true` relee el estado del propio plugin (`getStateInformation` +
+  `setStateInformation`) ~100 ms después del pedido (antes, el estado todavía no tiene los cambios
+  pendientes y los deshacía) y recién ahí responde; es opt-in porque es una restauración completa
+  (sforzando recarga su instrumento) y porque con Dexed se vio que un `setProgram` justo después de un
+  refresh a veces no se aplica (el siguiente sí, medido por nivel de audio). Lo que escribe la API
+  (`setParam`) se lee bien enseguida.
+- `AudioEngine`: el callback del dispositivo pasa por `TimedCallback` (reenvía al
+  `AudioProcessorPlayer` y mide la duración de cada callback: media, máximo, cuántos superan la duración
+  del bloque) → `getAndResetCallbackStats()`, `getXRunCount()`.
+- `ProjectController::getLoadSerial()` (se incrementa al terminar cada carga) para `projectLoaded` y
+  para que `loadProject` responda al final. `InstancePanel::refreshRows()` (la fila refleja gain/mute
+  cambiados por la API).
+- UI: indicador en la barra de estado **"API: 127.0.0.1:9471, N clientes"** (N = WebSockets abiertos;
+  "API: desactivada"; el error en rojo si el puerto está ocupado). Mensajes "API: abierto …",
+  "API: pánico…", "API: guardado …" en la barra de estado.
+- Configuración: `settings.xml` `apiEnabled` (true), `apiPort` (9471), `apiToken` (vacío). Nada se
+  escribe en settings: sin las claves vale el default. Línea de comandos `--api-port`, `--api-token`,
+  `--no-api`. Los self-tests corren **sin** API (salvo `--api-port`), así no chocan con una VstPlayer
+  abierta. Modo nuevo **`--api-test`**: GUI sin pasos de self-test, sin persistir nada, sin diálogos
+  (permite varias instancias, como los self-tests).
+- `examples/carrilion-client.js`: módulo ES sin dependencias (navegador o Node 22+): `connect(url,
+  {token})`, `status()`, `listParams`, `setParam(id, index|name|{paramId}, value)`, `getParam`,
+  `setGain`, `setMute`, `panic`, `listPrograms`, `setProgram`, `loadProject(path, {discardChanges})`,
+  `listProjects`, `saveProject`, `midi`, `levels`, `audioStats`, `on(event, fn)`, `httpRequest()` (sin
+  WebSocket) y **`vstPlayerPort(client, instanceId)`**: un "port" con la interfaz que usa `MidiOut` de
+  carrilion (`now, on, off, all_off`), con el ejemplo de integración en `apps/web/lib/engine/midi-out.js`
+  en comentarios. **carrilion no se modificó.**
+- Tests: `tools/api-test.mjs` (Node, sin dependencias) y `tools/run-api-test.ps1` (arranca la app con
+  `--api-test --api-port 9479 --project-data-dir <tmp> --debug-to-stdout`, chequea netstat, corre el
+  test, cierra la ventana y controla exit code, aserciones, fugas y que `%APPDATA%` no reciba
+  `recent.json` / autoguardado).
+- `GET /client.js` sirve `examples/carrilion-client.js` (embebido al compilar: CMake lo convierte en
+  `build*/generated/ClientScript.h` y lo regenera si cambia), sin token y con CORS, para poder hacer
+  `await import('http://127.0.0.1:9471/client.js')` desde la consola de cualquier página.
+
+**Archivos:** nuevos `cmake/httplib.cmake`, `src/api/ApiServer.{h,cpp}`, `src/api/ApiController.{h,cpp}`,
+`docs/api.md`, `examples/carrilion-client.js`, `tools/api-test.mjs`, `tools/run-api-test.ps1`; cambiados
+`CMakeLists.txt`, `src/Main.cpp`, `src/engine/AudioEngine.{h,cpp}`, `src/project/ProjectController.{h,cpp}`,
+`src/ui/InstancePanel.h`, `src/ui/MainContent.{h,cpp}`, `docs/progress.md`.
+
+**Verificación:**
+- `pwsh -NoProfile -File .\tools\build.ps1` y `-Config Debug` → OK, sin warnings en nuestro código
+  (cpp-httplib entra como include `SYSTEM` / `/external:W0`).
+- **`& .\tools\run-api-test.ps1`** (Release, sin token) → **PRUEBA DE API: OK, 83 comprobaciones, 0
+  fallos**, exit 0, 0 aserciones, 0 fugas, ~30 s. `-Token s3cr3t` → OK, 86 comprobaciones.
+  `-Config Debug -Token dbg -AllowedLeaks VST3HostContextHeadless,AsyncUpdater` → OK, 86, **0 aserciones**,
+  sólo la fuga conocida de sforzando (etapa 3; 2 instancias porque el test lo carga dos veces).
+  (Como `run-gui-test.ps1`: con `pwsh -File` el array de `-AllowedLeaks` llega como un solo texto; usar `&`.)
+  Lo que comprueba (resultados reales de la última corrida Release):
+  - netstat: `TCP 127.0.0.1:9479 0.0.0.0:0 LISTENING` (única dirección; `Get-NetTCPConnection` igual).
+    No apareció aviso del firewall.
+  - token: sin token / token equivocado → 401; WebSocket sin token → mensaje `unauthorized` y cierre
+    1008. `OPTIONS` → 204 con `Allow-Origin: *`; todas las respuestas con `Allow-Origin: *`.
+  - `status` por HTTP, `GET /api/status` y por WebSocket (con `id` devuelto y `clients: 1`).
+  - `listProjects examples` → `plugin-faltante, prueba-etapa5`; carpeta inexistente → 404.
+  - `loadProject examples\prueba-etapa5.vstproj.json` por WebSocket: responde con las 3 instancias
+    `ready` (~600 ms Release, ~1 s Debug); eventos `projectLoaded`, `instanceAdded` x3,
+    `instanceLoaded` x3. `status`: Dexed (2238 parámetros, 32 programas), Pads = Surge XT (2855),
+    Sampler = sforzando (2593), 3 rutas con `remapTo`.
+  - `setGain` −30 dB a las tres, `setMute` por id y por nombre; `status` lo refleja y `dirty: true`.
+  - `listParams` Surge XT (2855, con index/name/id/value/text/label); `setParam` por index 0.4 →
+    `listParams` lee 0.4; evento `paramChanged` con ese parámetro; `setParam` por nombre (WS) y por
+    `paramId`; `getParam` lee 0.7; errores: nombre inexistente 404, sin value 400, instancia
+    inexistente 404, valor 7 → se limita a 1.
+  - `listPrograms` Dexed (32); `setProgram` 20 y 5 → la misma nota mide −45.6 vs −41.0 dBFS (el programa
+    cambia de verdad); valores viejos: 0 parámetros cambian sin refresh, 86 con `refresh: true`.
+  - **MIDI directo**: note-on por WS a Dexed → pico en su nodo de ganancia de −100 (silencio) a
+    **−40.9 dBFS**, mezcla −40.9; evento `midiActivity`; array con 3 mensajes por HTTP; **panic** →
+    Dexed y mezcla −100 dBFS. MIDI inválido (sysex, sin status, incompleto, dato > 127) → 400 `badMidi`.
+  - JSON inválido, cuerpo vacío, array en vez de objeto → 400 `badJson`; comando desconocido → 400
+    `unknownCommand`; ruta desconocida → 404; por WebSocket JSON roto + comando desconocido → errores y la
+    conexión sigue abierta; el servidor sigue respondiendo.
+  - `loadProject` con cambios sin guardar → 409 `unsavedChanges`; `saveProject` a
+    `%TEMP%\vstplayer-api-test-*\api-guardado.vstproj.json` → ok, `status` sin cambios, `saveProject` sin
+    ruta → ok, aparece en `listProjects` y en recientes (los de la carpeta temporal);
+    `loadProject plugin-faltante` → instancia `missing` + aviso, `instanceRemoved` x3, `listParams` de la
+    faltante → 409; archivo inexistente → 404; reabrir el guardado → Pads −30 dB, Dexed programa 5 y el
+    parámetro movido por la API en 0.4.
+  - **50 setParam/s** (WS, 10 s, sobre Surge XT mientras suena un acorde en Pads) comparado con 5 s sin
+    tráfico y con un estrés de 500/s durante 3 s. WASAPI compartido 48 kHz / 480 (bloque 10 ms):
+
+    | | setParam/s | latencia p50 / p99 | callbacks (esperados) | callback medio / máx | sobre presupuesto | xruns | CPU |
+    |---|---|---|---|---|---|---|---|
+    | sin tráfico | 0 | — | 503 (500) | 0.22 / 1.16 ms | 0 | 0 | 2.6 % |
+    | 50/s | 50.0 | 0.54 / 0.99 ms | 1001 (1000) | 0.22 / 1.03 ms | 0 | 0 | 2.4 % |
+    | 500/s | 500.3 | 0.23 / 0.49 ms | 301 (300) | 0.20 / 0.70 ms | 0 | 0 | 1.9 % |
+
+    Debug, 50/s: callbacks 1001/1000, máx 0.64 ms, 0 sobre presupuesto, 0 xruns. "Callback" = todo el
+    grafo (medido alrededor de `AudioProcessorPlayer`). La nota sigue sonando durante la ráfaga.
+    `paramChanged`: como máximo 20 eventos en cualquier ventana de 1 s. (En una corrida anterior el p99
+    de latencia de 50/s fue 10.6 ms: un pedido esperó un ciclo; sin efecto en el audio.)
+  - Dos clientes WS → `clients: 2`; al cerrarlos vuelve a 0.
+  - `GET /client.js` = el archivo de `examples` byte a byte; el módulo `carrilion-client.js` importado en
+    Node: `connect`, `status`, `setParam` por nombre + `listParams`, `on('paramChanged')`, error como
+    `VstPlayerError` con `code`, `vstPlayerPort` (interfaz de puerto de `MidiOut`) toca Dexed y su note-off
+    programado + `all_off` dejan silencio, `httpRequest`.
+  - Cierre con `CloseMainWindow()` → exit 0. `%APPDATA%\VstPlayer` sin `recent.json` ni autoguardado;
+    `settings.xml` sin modificar.
+- Tests anteriores (Release y Debug): `ctest --test-dir build` y `build-debug` → 100 %;
+  `run-gui-test.ps1` (`--instance-selftest`) OK / OK (fuga conocida); `-AppArgs '--midi-selftest'` OK / OK
+  (0 fugas); `run-project-test.ps1` OK / OK; `run-ui-test.ps1` OK / OK (0 problemas de layout con el
+  indicador de API en la barra de estado, también en el mínimo 860x540 y a escala 1.5). Una corrida de
+  `run-ui-test.ps1` Release informó "plugins.xml igual que antes de la prueba: False" (la prueba igual da
+  OK; las demás corridas True); `plugins.xml` sigue con los mismos 7 plugins y sin blacklist (parece el
+  orden en que el escaneo de esa prueba lo reescribe, no algo de esta etapa).
+
+**Pendiente / problemas:**
+- **Verificación manual pendiente (usuario): Chrome + carrilion + Surge XT.**
+  1. Abrir `build\VstPlayer_artefacts\Release\VstPlayer.exe`. La barra de estado (abajo a la derecha)
+     debe decir `API: 127.0.0.1:9471, 0 clientes`.
+  2. Archivo → Abrir… → `examples\prueba-etapa5.vstproj.json` (o cualquier proyecto con Surge XT). En la
+     fila "Pads" (Surge XT) apretar **Editor** y dejar visibles los macros (abajo a la izquierda del
+     editor de Surge: M1…M8).
+  3. Abrir carrilion en Chrome como siempre, F12 → Consola, y pegar de a una línea:
+     ```js
+     const { connect } = await import('http://127.0.0.1:9471/client.js')
+     const vp = await connect()
+     const st = await vp.status(); st.instances.map(i => i.name + ' = ' + i.plugin.name)
+     const pads = st.instances.find(i => i.plugin.name === 'Surge XT')
+     await vp.listParams(pads.id, { filter: 'M1' })
+     await vp.setParam(pads.id, 0, 1.0)   // índice 0 = macro M1: la perilla M1 del editor sube al máximo
+     await vp.setParam(pads.id, 0, 0.0)   // y vuelve a cero
+     for (let i = 0; i <= 50; i++) setTimeout(() => vp.setParam(pads.id, 0, i / 50), i * 20)  // barrido de 1 s a 50/s
+     vp.on('paramChanged', e => console.log(e.params))  // mover M1 con el mouse en el editor: aparecen eventos
+     ```
+     La barra de estado de VstPlayer pasa a `1 cliente`.
+  4. Tocar algo desde carrilion (canal 2 o 3 → Pads por loopMIDI), o desde la consola
+     `await vp.midi(pads.id, [0x90, 60, 100])`, y con la nota sonando: `await vp.panic()` → se corta todo.
+  5. Para oír "50 setParam/s sin clicks": buscar un parámetro audible
+     (`await vp.listParams(pads.id, { filter: 'Cutoff' })`), y con una nota sostenida correr el barrido del
+     paso 3 con ese `index` varias veces seguidas; no debería haber clicks ni cortes (por programa: 0
+     callbacks perdidos ni lentos, ver arriba).
+  6. Si Chrome bloquea el `import` o el `connect` (p. ej. carrilion servido por https), anotar el mensaje de
+     la consola (no debería: 127.0.0.1 cuenta como origen seguro y la API manda CORS y
+     `Allow-Private-Network`).
+- **Valores viejos de parámetros** (Dexed tras cambiar de programa, sforzando tras cargar un instrumento):
+  `listParams` devuelve la copia del host y no hay `paramChanged`; `refresh: true` es la salida, con los
+  costos documentados en `docs/api.md`. JUCE 8.0.15 no ofrece una forma pública de releer los valores del
+  controlador VST3 sin restaurar el estado (`resetParameters` es privado de su host VST3).
+- Con Dexed, un `setProgram` mandado inmediatamente después de un `refresh` a veces no se aplica
+  (observado midiendo el nivel de una nota; el siguiente `setProgram` sí). Causa no investigada (lado
+  plugin/JUCE); documentado.
+- `setParam` responde sin `text` (ver docs/api.md); el texto llega en `paramChanged` o con `getParam`. El
+  texto que Surge XT da para sus macros no siempre coincide con el valor (0.4 → "0.38"): es del plugin.
+- MIDI por la API no enciende el LED de la fila (el LED muestra los puertos) ni pasa por las rutas.
+- `loadProject` / `saveProject` aceptan cualquier ruta del disco: con `Allow-Origin: *`, cualquier página
+  abierta en el navegador de esta máquina puede usarlos (riesgo aceptado y documentado; `apiToken` lo
+  cierra).
+- No hay UI para cambiar puerto o token (se editan en `settings.xml`, documentado). Un puerto ocupado se
+  muestra en rojo en la barra de estado y la app sigue funcionando sin API.

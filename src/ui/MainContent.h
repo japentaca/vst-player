@@ -49,6 +49,10 @@ public:
     std::function<void()> onShowAudioSettings, onShowMidiPorts, onShowPlugins;
     // True while a plugin scan runs (status bar progress).
     std::function<bool()> isScanning;
+    // Local API indicator in the status bar ("API: 127.0.0.1:9471, 1 cliente").
+    std::function<juce::String()> apiStatusText;
+    std::function<bool()> apiHasError;
+    juce::String getApiText() const { return apiLabel.getText(); }
 
     // What the top bar / status bar show (tests).
     juce::String getAudioText() const { return audioInfoLabel.getText(); }
@@ -92,6 +96,7 @@ private:
     juce::ProgressBar progressBar { progressValue };
     juce::Label progressLabel;
     juce::Label hintLabel;
+    juce::Label apiLabel;
 
     juce::String audioError;
     int tickCount = 0;

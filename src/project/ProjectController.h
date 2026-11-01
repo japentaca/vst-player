@@ -70,6 +70,8 @@ public:
     juce::String describeProgress() const;
     // Problems of the last apply() (complete once isLoading() is false).
     const juce::StringArray& getLastWarnings() const noexcept { return lastWarnings; }
+    // Incremented every time a project (or "Nuevo") finished loading: every plugin ready or failed.
+    juce::uint64 getLoadSerial() const noexcept { return loadSerial; }
 
     //==============================================================================
     project::Project capture();
@@ -138,6 +140,7 @@ private:
     std::set<InstanceId> pendingLoads;
     std::set<InstanceId> openEditorAfterLoad;
     int loadsRequested = 0;
+    juce::uint64 loadSerial = 0;
     juce::StringArray lastWarnings;
 
     // Dirty tracking.
