@@ -25,12 +25,16 @@ target_sources(VstPlayer PRIVATE
     src/app/AppSettings.cpp
     src/app/CommandLine.cpp
     src/app/InstanceSelfTest.cpp
+    src/app/MidiSelfTest.cpp
+    src/app/ProcessTools.cpp
     src/app/Translations.cpp
     src/engine/AudioEngine.cpp
     src/engine/InstanceGraph.cpp
+    src/engine/MidiRouter.cpp
     src/engine/PluginManager.cpp
     src/ui/InstancePanel.cpp
     src/ui/MainContent.cpp
+    src/ui/MidiPortsWindow.cpp
     src/ui/PluginEditorWindow.cpp
     src/ui/PluginListWindow.cpp)
 

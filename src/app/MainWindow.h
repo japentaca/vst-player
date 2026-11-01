@@ -9,6 +9,8 @@ class AppSettings;
 class AudioEngine;
 class InstanceGraph;
 class InstancePanel;
+class MidiPortsWindow;
+class MidiRouter;
 class PluginManager;
 class PluginListWindow;
 
@@ -18,7 +20,7 @@ class MainWindow final : public juce::DocumentWindow,
 {
 public:
     MainWindow (const juce::String& title, AppSettings& settings, AudioEngine& engine, PluginManager& plugins,
-                InstanceGraph& instances);
+                InstanceGraph& instances, MidiRouter& router);
     ~MainWindow() override;
 
     void closeButtonPressed() override;
@@ -32,6 +34,9 @@ public:
     // Opens the plugin list window; startScan = also press "Escanear".
     void showPluginList (bool startScan = false);
     InstancePanel& getInstancePanel();
+    // Audio > "Puertos MIDI…" (diagnostic window: port states and last messages).
+    void showMidiPorts();
+    MidiPortsWindow* getMidiPortsWindow() const noexcept { return midiPortsWindow.get(); }
 
 private:
     enum MenuIndex
@@ -46,7 +51,8 @@ private:
         cmdQuit = 1,
         cmdAbout,
         cmdPlugins,
-        cmdAudioSettings
+        cmdAudioSettings,
+        cmdMidiPorts
     };
 
     // MenuBarModel
@@ -59,8 +65,10 @@ private:
     AppSettings& settings;
     AudioEngine& engine;
     PluginManager& plugins;
+    MidiRouter& router;
 
     std::unique_ptr<PluginListWindow> pluginListWindow;
+    std::unique_ptr<MidiPortsWindow> midiPortsWindow;
     juce::Component::SafePointer<juce::DialogWindow> audioSettingsWindow;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainWindow)

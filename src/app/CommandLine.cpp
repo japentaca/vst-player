@@ -69,6 +69,15 @@ Mode detectMode (const juce::StringArray& args)
     if (args.contains ("--audio-devices"))
         return Mode::audioDevices;
 
+    if (args.contains ("--midi-send"))
+        return Mode::midiSend;
+
+    if (args.contains ("--midi-ports"))
+        return Mode::midiPorts;
+
+    if (args.contains ("--midi-monitor"))
+        return Mode::midiMonitor;
+
     return Mode::gui;
 }
 
@@ -344,6 +353,162 @@ int runAudioDevices()
         print ("  sample rates: " + rates.joinIntoString (" "));
         print ("  buffers: " + sizes.joinIntoString (" ") + " (default " + juce::String (device->getDefaultBufferSize()) + ")");
     }
+
+    return 0;
+}
+
+
+//==============================================================================
+int runMidiPorts()
+{
+    print ("VstPlayer --midi-ports");
+    print ("Entradas:");
+
+    for (auto& device : juce::MidiInput::getAvailableDevices())
+        print ("  " + device.name + "  [" + device.identifier + "]");
+
+    print ("Salidas:");
+
+    for (auto& device : juce::MidiOutput::getAvailableDevices())
+        print ("  " + device.name + "  [" + device.identifier + "]");
+
+    return 0;
+}
+
+int runMidiSend (const juce::StringArray& args)
+{
+    const auto index = args.indexOf ("--midi-send");
+
+    if (index < 0 || index + 1 >= args.size())
+    {
+        print ("Uso: VstPlayer.exe --midi-send \"<puerto de salida>\" <msg> [<msg> ...]   (msg = 90:3C:64 o +ms)");
+        return 2;
+    }
+
+    const auto portName = args[index + 1].unquoted();
+    const auto devices = juce::MidiOutput::getAvailableDevices();
+    juce::MidiDeviceInfo chosen;
+
+    for (auto& device : devices)
+        if (device.name == portName)
+            chosen = device;
+
+    if (chosen.identifier.isEmpty())
+        for (auto& device : devices)
+            if (device.name.containsIgnoreCase (portName))
+                chosen = device;
+
+    if (chosen.identifier.isEmpty())
+    {
+        print ("No existe el puerto de salida MIDI \"" + portName + "\"");
+        return 3;
+    }
+
+    auto output = juce::MidiOutput::openDevice (chosen.identifier);
+
+    if (output == nullptr)
+    {
+        print ("No se pudo abrir \"" + chosen.name + "\"");
+        return 4;
+    }
+
+    int sent = 0;
+
+    for (int i = index + 2; i < args.size(); ++i)
+    {
+        const auto token = args[i].unquoted().trim();
+
+        if (token.startsWithChar ('+'))
+        {
+            juce::Thread::sleep (token.substring (1).getIntValue());
+            continue;
+        }
+
+        juce::MemoryBlock bytes;
+
+        for (auto& part : juce::StringArray::fromTokens (token, ":", {}))
+        {
+            const auto value = part.getHexValue32();
+
+            if (part.isEmpty() || value < 0 || value > 255)
+            {
+                print ("Mensaje invalido: " + token);
+                return 5;
+            }
+
+            const auto byte = (juce::uint8) value;
+            bytes.append (&byte, 1);
+        }
+
+        if (bytes.isEmpty())
+            continue;
+
+        const juce::MidiMessage message (bytes.getData(), (int) bytes.getSize());
+        output->sendMessageNow (message);
+        ++sent;
+    }
+
+    print ("Enviados " + juce::String (sent) + " mensajes a \"" + chosen.name + "\"");
+    return 0;
+}
+
+
+namespace
+{
+struct PrintingCallback final : public juce::MidiInputCallback
+{
+    void handleIncomingMidiMessage (juce::MidiInput* source, const juce::MidiMessage& message) override
+    {
+        const juce::ScopedLock sl (lock);
+        lines.add (source->getName() + ": " + message.getDescription());
+    }
+
+    juce::CriticalSection lock;
+    juce::StringArray lines;
+};
+} // namespace
+
+int runMidiMonitor (const juce::StringArray& args)
+{
+    const auto index = args.indexOf ("--midi-monitor");
+    const auto seconds = index >= 0 && index + 1 < args.size() ? juce::jmax (1, args[index + 1].getIntValue()) : 10;
+
+    PrintingCallback callback;
+    std::vector<std::unique_ptr<juce::MidiInput>> inputs;
+
+    for (auto& device : juce::MidiInput::getAvailableDevices())
+    {
+        if (auto input = juce::MidiInput::openDevice (device.identifier, &callback))
+        {
+            input->start();
+            print ("Escuchando " + device.name);
+            inputs.push_back (std::move (input));
+        }
+        else
+        {
+            print ("No se pudo abrir " + device.name);
+        }
+    }
+
+    print ("Monitoreando " + juce::String (seconds) + " s...");
+    const auto end = juce::Time::getMillisecondCounterHiRes() + seconds * 1000.0;
+
+    while (juce::Time::getMillisecondCounterHiRes() < end)
+    {
+        juce::Thread::sleep (100);
+        juce::StringArray pending;
+
+        {
+            const juce::ScopedLock sl (callback.lock);
+            pending.swapWith (callback.lines);
+        }
+
+        for (auto& line : pending)
+            print ("  " + line);
+    }
+
+    for (auto& input : inputs)
+        input->stop();
 
     return 0;
 }

@@ -3,14 +3,15 @@
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <array>
 #include <atomic>
 
 namespace vstplayer
 {
 
 // Per-instance MIDI entry point: a graph node with no audio whose MIDI output is connected to
-// the plugin node. Any thread can queue messages (virtual keyboard now, MIDI input ports in
-// stage 4) through the MidiMessageCollector, which turns their timestamps into sample offsets
+// the plugin node. Any thread can queue messages (virtual keyboard, MidiRouter for the MIDI input
+// ports) through the MidiMessageCollector, which turns their timestamps into sample offsets
 // inside the next audio block.
 //
 // Panic is a flag consumed on the audio thread: pending messages are dropped and the block
@@ -41,6 +42,9 @@ public:
     // Diagnostics (tests, MIDI activity LED in later stages).
     juce::int64 getMessagesQueued() const noexcept { return messagesQueued.load(); }
     juce::int64 getEventsDelivered() const noexcept { return eventsDelivered.load(); }
+    // Note-ons / note-offs handed to the plugin, by channel 1..16 (routing tests).
+    int getNoteOnsDelivered (int channel) const noexcept { return channel >= 1 && channel <= 16 ? noteOnsDelivered[(size_t) channel - 1].load() : 0; }
+    int getNoteOffsDelivered (int channel) const noexcept { return channel >= 1 && channel <= 16 ? noteOffsDelivered[(size_t) channel - 1].load() : 0; }
 
     //==============================================================================
     const juce::String getName() const override { return "Entrada MIDI"; }
@@ -71,6 +75,20 @@ public:
         }
 
         eventsDelivered.fetch_add (midi.getNumEvents());
+
+        for (const auto metadata : midi)
+        {
+            const auto message = metadata.getMessage();
+            const auto index = (size_t) (message.getChannel() - 1);
+
+            if (index < 16)
+            {
+                if (message.isNoteOn())
+                    noteOnsDelivered[index].fetch_add (1);
+                else if (message.isNoteOff())
+                    noteOffsDelivered[index].fetch_add (1);
+            }
+        }
     }
 
     using AudioProcessor::processBlock;
@@ -97,6 +115,8 @@ private:
     std::atomic<bool> panicRequested { false };
     std::atomic<juce::int64> messagesQueued { 0 };
     std::atomic<juce::int64> eventsDelivered { 0 };
+    std::array<std::atomic<int>, 16> noteOnsDelivered {};
+    std::array<std::atomic<int>, 16> noteOffsDelivered {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MidiSourceProcessor)
 };

@@ -45,8 +45,9 @@ static TestState& state()
     return s;
 }
 
-InstanceSelfTest::InstanceSelfTest (MainWindow& w, AudioEngine& e, PluginManager& p, InstanceGraph& g, juce::String single)
-    : window (w), engine (e), plugins (p), graph (g), singlePluginName (std::move (single))
+InstanceSelfTest::InstanceSelfTest (MainWindow& w, AudioEngine& e, PluginManager& p, InstanceGraph& g, MidiRouter& r, Kind k,
+                                    juce::String single)
+    : window (w), engine (e), plugins (p), graph (g), router (r), kind (k), singlePluginName (std::move (single))
 {
 }
 
@@ -58,9 +59,11 @@ InstanceSelfTest::~InstanceSelfTest()
 
 void InstanceSelfTest::start()
 {
-    cli::print ("VstPlayer --instance-selftest");
+    cli::print (kind == Kind::midi ? "VstPlayer --midi-selftest" : "VstPlayer --instance-selftest");
     cli::print (engine.describeDevice());
-    if (singlePluginName.isNotEmpty())
+    if (kind == Kind::midi)
+        buildMidiSteps();
+    else if (singlePluginName.isNotEmpty())
         buildSinglePluginSteps();
     else
         buildSteps();
@@ -148,7 +151,8 @@ void InstanceSelfTest::finish (bool ok)
     finished = true;
     stopTimer();
     cli::print (ok ? "RESULTADO: OK" : "RESULTADO: FALLO (" + juce::String (failures) + " fallas)");
-    cli::print ("Saliendo (el editor de Dexed queda abierto a proposito: prueba el cierre con editores abiertos).");
+    if (kind == Kind::instances)
+        cli::print ("Saliendo (el editor de Dexed queda abierto a proposito: prueba el cierre con editores abiertos).");
 
     juce::JUCEApplicationBase::getInstance()->setApplicationReturnValue (ok ? 0 : 1);
     juce::JUCEApplicationBase::getInstance()->systemRequestedQuit();

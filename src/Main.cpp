@@ -7,6 +7,7 @@
 #include "app/Translations.h"
 #include "engine/AudioEngine.h"
 #include "engine/InstanceGraph.h"
+#include "engine/MidiRouter.h"
 #include "engine/PluginManager.h"
 
 namespace vstplayer
@@ -24,7 +25,8 @@ public:
     bool moreThanOneInstanceAllowed() override
     {
         const auto args = getCommandLineParameterArray();
-        return cli::detectMode (args) != cli::Mode::gui || args.contains (kInstanceSelfTestFlag);
+        return cli::detectMode (args) != cli::Mode::gui || args.contains (kInstanceSelfTestFlag)
+               || args.contains (kMidiSelfTestFlag);
     }
 
     void initialise (const juce::String&) override
@@ -46,20 +48,26 @@ public:
 
         // The self-test changes the audio device temporarily: never persist that (nor the
         // window state).
-        isSelfTest = args.contains (kInstanceSelfTestFlag);
+        isSelfTest = args.contains (kInstanceSelfTestFlag) || args.contains (kMidiSelfTestFlag);
 
         plugins = std::make_unique<PluginManager> (*settings);
         audioEngine = std::make_unique<AudioEngine> (*settings, ! isSelfTest);
         const auto audioError = audioEngine->initialise();
         instanceGraph = std::make_unique<InstanceGraph> (*audioEngine, *plugins);
+        midiRouter = std::make_unique<MidiRouter> (*instanceGraph);
 
-        mainWindow = std::make_unique<MainWindow> (getApplicationName(), *settings, *audioEngine, *plugins, *instanceGraph);
+        mainWindow = std::make_unique<MainWindow> (getApplicationName(), *settings, *audioEngine, *plugins, *instanceGraph,
+                                                   *midiRouter);
 
         // GUI test hooks (used by the automated checks, harmless for users):
         //   --show-plugins, --gui-scan (open the plugin list and press "Escanear"),
-        //   --show-audio-settings, --instance-selftest (see InstanceSelfTest.h)
+        //   --show-audio-settings, --show-midi-ports, --instance-selftest, --midi-selftest
+        //   (see InstanceSelfTest.h)
         if (args.contains ("--show-audio-settings"))
             mainWindow->showAudioSettings();
+
+        if (args.contains ("--show-midi-ports"))
+            mainWindow->showMidiPorts();
 
         if (args.contains ("--show-plugins") || args.contains ("--gui-scan"))
             mainWindow->showPluginList (args.contains ("--gui-scan"));
@@ -75,7 +83,9 @@ public:
         {
             const auto pluginIndex = args.indexOf ("--plugin");
             const auto singlePlugin = pluginIndex >= 0 && pluginIndex + 1 < args.size() ? args[pluginIndex + 1].unquoted() : juce::String();
-            selfTest = std::make_unique<InstanceSelfTest> (*mainWindow, *audioEngine, *plugins, *instanceGraph, singlePlugin);
+            const auto kind = args.contains (kMidiSelfTestFlag) ? InstanceSelfTest::Kind::midi : InstanceSelfTest::Kind::instances;
+            selfTest = std::make_unique<InstanceSelfTest> (*mainWindow, *audioEngine, *plugins, *instanceGraph, *midiRouter,
+                                                           kind, singlePlugin);
             selfTest->start();
         }
     }
@@ -89,8 +99,10 @@ public:
             mainWindow->saveWindowState();
 
         // Order matters: the window (and the plugin editors it owns) goes first, then the
-        // instances, then the audio engine that owns the graph.
+        // MIDI router (stops writing to the instances), then the instances, then the audio
+        // engine that owns the graph.
         mainWindow = nullptr;
+        midiRouter = nullptr;
         instanceGraph = nullptr;
 
         if (audioEngine != nullptr)
@@ -143,6 +155,18 @@ private:
                 exitCode = cli::runAudioDevices();
                 break;
 
+            case cli::Mode::midiSend:
+                exitCode = cli::runMidiSend (args);
+                break;
+
+            case cli::Mode::midiPorts:
+                exitCode = cli::runMidiPorts();
+                break;
+
+            case cli::Mode::midiMonitor:
+                exitCode = cli::runMidiMonitor (args);
+                break;
+
             case cli::Mode::gui:
             default:
                 break;
@@ -156,11 +180,13 @@ private:
     std::unique_ptr<PluginManager> plugins;
     std::unique_ptr<AudioEngine> audioEngine;
     std::unique_ptr<InstanceGraph> instanceGraph;
+    std::unique_ptr<MidiRouter> midiRouter;
     std::unique_ptr<MainWindow> mainWindow;
     std::unique_ptr<InstanceSelfTest> selfTest;
     bool isSelfTest = false;
 
     static constexpr const char* kInstanceSelfTestFlag = "--instance-selftest";
+    static constexpr const char* kMidiSelfTestFlag = "--midi-selftest";
 };
 
 } // namespace vstplayer

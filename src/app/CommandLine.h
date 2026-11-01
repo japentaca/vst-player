@@ -22,6 +22,14 @@ class AppSettings;
 //                                        is re-prepared. Does not modify settings.xml.
 //   VstPlayer.exe --audio-devices        list audio device types, default output device,
 //                                        sample rates and buffer sizes.
+//   VstPlayer.exe --midi-ports           list MIDI input and output ports.
+//   VstPlayer.exe --midi-monitor [seconds]
+//                                        open every MIDI input and print what arrives (default 10 s).
+//   VstPlayer.exe --midi-send "<output port>" <msg> [<msg> ...]
+//                                        send MIDI to an output port (e.g. "loopMIDI Port", whose
+//                                        input then receives it). <msg> = hex bytes separated by
+//                                        ':' (e.g. 90:3C:64 = note on ch 1, C3, vel 100) or +N to
+//                                        wait N ms. Exit 0 if every message was sent.
 namespace cli
 {
 enum class Mode
@@ -30,7 +38,10 @@ enum class Mode
     scan,
     scanChild,
     audioSelfTest,
-    audioDevices
+    audioDevices,
+    midiSend,
+    midiPorts,
+    midiMonitor
 };
 
 Mode detectMode (const juce::StringArray& args);
@@ -49,6 +60,9 @@ int runScan (const juce::StringArray& args, AppSettings& settings);
 int runScanChild (const juce::StringArray& args);
 int runAudioSelfTest (const juce::StringArray& args, AppSettings& settings);
 int runAudioDevices();
+int runMidiSend (const juce::StringArray& args);
+int runMidiPorts();
+int runMidiMonitor (const juce::StringArray& args);
 } // namespace cli
 
 } // namespace vstplayer

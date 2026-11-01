@@ -10,6 +10,7 @@ namespace vstplayer
 class AudioEngine;
 class InstanceGraph;
 class InstancePanel;
+class MidiRouter;
 class PluginManager;
 
 // Provisional main window content: audio status, plugin count and the test tone button
@@ -19,7 +20,7 @@ class MainContent final : public juce::Component,
                           private juce::ChangeListener
 {
 public:
-    MainContent (AudioEngine& engine, PluginManager& plugins, InstanceGraph& instances);
+    MainContent (AudioEngine& engine, PluginManager& plugins, InstanceGraph& instances, MidiRouter& router);
     ~MainContent() override;
 
     // Last audio device error (empty clears it). Cleared automatically when the device changes.

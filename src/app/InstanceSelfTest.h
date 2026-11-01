@@ -11,6 +11,7 @@ namespace vstplayer
 class AudioEngine;
 class InstanceGraph;
 class MainWindow;
+class MidiRouter;
 class PluginManager;
 
 // GUI test hook "--instance-selftest": drives the real main window without user input and
@@ -25,12 +26,26 @@ class PluginManager;
 //   6. Removes Surge XT with its editor open; quits with Dexed's editor still open.
 // "--instance-selftest --plugin <name>": short run for one plugin only (load, editor open and
 // close, note on/off, remove), handy to find which plugin causes a problem.
+// "--midi-selftest" (stage 4, see MidiSelfTest.cpp): MIDI input ports and routing. Sends MIDI
+// from child processes ("VstPlayer.exe --midi-send") to the loopMIDI port and checks per
+// instance and per channel what reached each plugin (keep, remapTo, unrouted channels, one
+// channel to two instances, retrigger, notes held across a route change, panic, system
+// messages), the "Puertos MIDI" window and the latency the AudioDeviceManager reports with
+// DirectSound 256 and 128. "--midi-selftest --restart-loopmidi" also terminates loopMIDI.exe
+// and starts it again (minimized) to check that a port deleted and re-created while in use
+// is picked up again by itself.
 // The audio setup is not persisted in this mode (see Main.cpp).
 class InstanceSelfTest final : private juce::Timer
 {
 public:
+    enum class Kind
+    {
+        instances, // --instance-selftest (stage 3)
+        midi       // --midi-selftest (stage 4)
+    };
+
     InstanceSelfTest (MainWindow& window, AudioEngine& engine, PluginManager& plugins, InstanceGraph& graph,
-                      juce::String singlePluginName = {});
+                      MidiRouter& router, Kind kind = Kind::instances, juce::String singlePluginName = {});
     ~InstanceSelfTest() override;
 
     void start();
@@ -46,6 +61,7 @@ private:
     void timerCallback() override;
     void buildSteps();
     void buildSinglePluginSteps();
+    void buildMidiSteps(); // MidiSelfTest.cpp
     void finish (bool ok);
 
     // Step helpers.
@@ -58,6 +74,8 @@ private:
     AudioEngine& engine;
     PluginManager& plugins;
     InstanceGraph& graph;
+    MidiRouter& router;
+    const Kind kind;
     const juce::String singlePluginName;
 
     std::vector<Step> steps;

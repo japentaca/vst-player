@@ -5,6 +5,7 @@
 #include "engine/PluginManager.h"
 #include "ui/InstancePanel.h"
 #include "ui/MainContent.h"
+#include "ui/MidiPortsWindow.h"
 #include "ui/PluginListWindow.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -20,18 +21,20 @@ constexpr int kMinWidth = 640;
 constexpr int kMinHeight = 480;
 } // namespace
 
-MainWindow::MainWindow (const juce::String& title, AppSettings& s, AudioEngine& e, PluginManager& p, InstanceGraph& instances)
+MainWindow::MainWindow (const juce::String& title, AppSettings& s, AudioEngine& e, PluginManager& p, InstanceGraph& instances,
+                        MidiRouter& r)
     : DocumentWindow (title,
                       juce::Desktop::getInstance().getDefaultLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId),
                       DocumentWindow::allButtons),
       settings (s),
       engine (e),
-      plugins (p)
+      plugins (p),
+      router (r)
 {
     setUsingNativeTitleBar (true);
     setMenuBar (this);
 
-    auto content = std::make_unique<MainContent> (engine, plugins, instances);
+    auto content = std::make_unique<MainContent> (engine, plugins, instances, router);
     content->onShowAudioSettings = [this] { showAudioSettings(); };
     content->onShowPlugins = [this] { showPluginList(); };
     setContentOwned (content.release(), true);
@@ -52,6 +55,7 @@ MainWindow::~MainWindow()
         delete audioSettingsWindow.getComponent();
 
     pluginListWindow = nullptr;
+    midiPortsWindow = nullptr;
     setMenuBar (nullptr);
 }
 
@@ -84,7 +88,7 @@ void MainWindow::showAudioSettings()
         return;
     }
 
-    // 0 inputs, exactly 2 outputs (stereo pair), no MIDI here (MIDI ports arrive in stage 4).
+    // 0 inputs, exactly 2 outputs (stereo pair), no MIDI here (MIDI inputs: Audio > Puertos MIDI and the instance rows).
     auto selector = std::make_unique<juce::AudioDeviceSelectorComponent> (engine.getDeviceManager(),
                                                                           0, 0, 2, 2,
                                                                           false, false, true, false);
@@ -100,6 +104,18 @@ void MainWindow::showAudioSettings()
     options.resizable = true;
 
     audioSettingsWindow = options.launchAsync();
+}
+
+void MainWindow::showMidiPorts()
+{
+    if (midiPortsWindow == nullptr)
+    {
+        midiPortsWindow = std::make_unique<MidiPortsWindow> (router);
+        midiPortsWindow->centreAroundComponent (this, midiPortsWindow->getWidth(), midiPortsWindow->getHeight());
+    }
+
+    midiPortsWindow->setVisible (true);
+    midiPortsWindow->toFront (true);
 }
 
 void MainWindow::showPluginList (bool startScan)
@@ -133,6 +149,7 @@ juce::PopupMenu MainWindow::getMenuForIndex (int topLevelMenuIndex, const juce::
 
         case audioMenu:
             menu.addItem (cmdAudioSettings, juce::String::fromUTF8 ("Configuración de audio…"));
+            menu.addItem (cmdMidiPorts, juce::String::fromUTF8 ("Puertos MIDI…"));
             break;
 
         case helpMenu:
@@ -160,6 +177,10 @@ void MainWindow::menuItemSelected (int menuItemID, int)
 
         case cmdAudioSettings:
             showAudioSettings();
+            break;
+
+        case cmdMidiPorts:
+            showMidiPorts();
             break;
 
         case cmdAbout:

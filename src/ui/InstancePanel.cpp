@@ -1,6 +1,7 @@
 #include "ui/InstancePanel.h"
 
 #include "engine/GainProcessor.h"
+#include "engine/MidiRouter.h"
 #include "engine/PluginManager.h"
 #include "ui/PluginEditorWindow.h"
 
@@ -9,7 +10,8 @@ namespace vstplayer
 
 namespace
 {
-constexpr int kRowHeight = 36;
+constexpr int kRowHeight = 66;
+constexpr double kLedHoldMs = 120.0;
 constexpr int kKeyboardHeight = 90;
 
 juce::String describeState (const Instance& instance)
@@ -71,7 +73,123 @@ public:
             });
         };
         addAndMakeVisible (removeButton);
+
+        midiLabel.setText ("MIDI:", juce::dontSendNotification);
+        midiLabel.setInterceptsMouseClicks (false, false);
+        midiLabel.setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+        addAndMakeVisible (midiLabel);
+
+        led.setInterceptsMouseClicks (false, false);
+        addAndMakeVisible (led);
+
+        portBox.setTooltip ("Puerto de entrada MIDI");
+        portBox.onChange = [this]
+        {
+            const auto selected = portBox.getSelectedId();
+
+            if (selected == 1)
+                owner.setInstanceMidiPort (id, {});
+            else if (juce::isPositiveAndBelow (selected - 2, portItems.size()))
+                owner.setInstanceMidiPort (id, portItems[selected - 2]);
+        };
+        addAndMakeVisible (portBox);
+
+        channelsButton.setTooltip (juce::String::fromUTF8 ("Canales MIDI que escucha esta instancia"));
+        channelsButton.onClick = [this] { owner.showChannelSelector (id, channelsButton); };
+        addAndMakeVisible (channelsButton);
+
+        modeBox.setTooltip ("keep: pasa el canal original; remapTo: lo cambia al canal elegido");
+        modeBox.addItem ("Canal original (keep)", 1);
+        for (int channel = 1; channel <= 16; ++channel)
+            modeBox.addItem (juce::String::fromUTF8 ("Remapear → canal ") + juce::String (channel), channel + 1);
+        modeBox.onChange = [this]
+        {
+            const auto selected = modeBox.getSelectedId();
+            if (selected >= 1)
+                owner.setInstanceMidiRemap (id, selected - 1);
+        };
+        addAndMakeVisible (modeBox);
     }
+
+    // Activity LED: lit for a moment after each new routed message.
+    class Led final : public juce::Component
+    {
+    public:
+        void setLit (bool shouldBeLit)
+        {
+            if (lit != shouldBeLit)
+            {
+                lit = shouldBeLit;
+                repaint();
+            }
+        }
+
+        bool isLit() const noexcept { return lit; }
+
+        void paint (juce::Graphics& g) override
+        {
+            auto area = getLocalBounds().toFloat().withSizeKeepingCentre (12.0f, 12.0f);
+            g.setColour (lit ? juce::Colour (0xff4cff6a) : juce::Colour (0xff1f3a24));
+            g.fillEllipse (area);
+            g.setColour (juce::Colours::black.withAlpha (0.6f));
+            g.drawEllipse (area, 1.0f);
+        }
+
+    private:
+        bool lit = false;
+    };
+
+    void refreshMidi (const MidiRouter& router)
+    {
+        const auto routes = router.getRoutesForInstance (id);
+        const auto* route = routes.empty() ? nullptr : &routes.front();
+        const auto current = route != nullptr ? route->inputDevice : juce::String();
+
+        auto items = router.getAvailableInputNames();
+        const auto missing = current.isNotEmpty() && ! items.contains (current);
+
+        if (missing)
+            items.add (current);
+
+        if (items != portItems || missing != portMissing)
+        {
+            portItems = items;
+            portMissing = missing;
+            portBox.clear (juce::dontSendNotification);
+            portBox.addItem ("(sin entrada MIDI)", 1);
+
+            for (int i = 0; i < portItems.size(); ++i)
+                portBox.addItem (portItems[i] + (missing && i == portItems.size() - 1 ? " (desconectado)" : ""), i + 2);
+        }
+
+        portBox.setSelectedId (route != nullptr ? portItems.indexOf (current) + 2 : 1, juce::dontSendNotification);
+        const auto portOk = route == nullptr || router.isPortOpen (current);
+        portBox.setColour (juce::ComboBox::textColourId, portOk ? juce::Colours::white : juce::Colours::orangered);
+        portBox.setTooltip (portOk ? juce::String ("Puerto de entrada MIDI")
+                                   : juce::String::fromUTF8 ("El puerto no está disponible: se reabre solo cuando vuelva"));
+
+        channelsButton.setButtonText ("Canales: " + (route != nullptr ? MidiRoute::describeChannels (route->channelMask) : juce::String ("-")));
+        channelsButton.setEnabled (route != nullptr);
+        modeBox.setSelectedId (route != nullptr ? (route->isKeep() ? 1 : route->remapChannel + 1) : 1, juce::dontSendNotification);
+        modeBox.setEnabled (route != nullptr);
+    }
+
+    void updateLed (juce::int64 activityCount, double nowMs)
+    {
+        if (activityCount != lastActivity)
+        {
+            lastActivity = activityCount;
+            lastActivityMs = nowMs;
+            ++flashes;
+        }
+
+        led.setLit (nowMs - lastActivityMs < kLedHoldMs);
+    }
+
+    int getLedFlashes() const noexcept { return flashes; }
+    juce::String getPortText() const { return portBox.getText(); }
+    juce::String getChannelsText() const { return channelsButton.getButtonText(); }
+    juce::String getModeText() const { return modeBox.getText(); }
 
     void refresh (const Instance& instance, bool isSelected)
     {
@@ -117,6 +235,18 @@ public:
     void resized() override
     {
         auto area = getLocalBounds().reduced (8, 4);
+        auto midiLine = area.removeFromBottom (26);
+        area.removeFromBottom (2);
+
+        midiLabel.setBounds (midiLine.removeFromLeft (40));
+        led.setBounds (midiLine.removeFromLeft (20));
+        midiLine.removeFromLeft (6);
+        portBox.setBounds (midiLine.removeFromLeft (240));
+        midiLine.removeFromLeft (6);
+        channelsButton.setBounds (midiLine.removeFromLeft (220));
+        midiLine.removeFromLeft (6);
+        modeBox.setBounds (midiLine.removeFromLeft (210));
+
         nameLabel.setBounds (area.removeFromLeft (170));
         area.removeFromLeft (4);
         removeButton.setBounds (area.removeFromRight (72));
@@ -141,6 +271,17 @@ private:
     juce::ToggleButton muteButton;
     juce::TextButton editorButton;
     juce::TextButton removeButton;
+
+    juce::Label midiLabel;
+    Led led;
+    juce::ComboBox portBox;
+    juce::TextButton channelsButton;
+    juce::ComboBox modeBox;
+    juce::StringArray portItems;
+    bool portMissing = false;
+    juce::int64 lastActivity = 0;
+    double lastActivityMs = -1.0e9;
+    int flashes = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Row)
 };
@@ -174,8 +315,74 @@ public:
 };
 
 //==============================================================================
-InstancePanel::InstancePanel (InstanceGraph& g, PluginManager& p)
+// Content of the call-out opened by "Canales: ...": 16 toggles plus "Todos" / "Ninguno".
+// Every click applies right away through onChange.
+class InstancePanel::ChannelSelector final : public juce::Component
+{
+public:
+    ChannelSelector (juce::uint16 initialMask, std::function<void (juce::uint16)> changed)
+        : onChange (std::move (changed))
+    {
+        for (int channel = 1; channel <= 16; ++channel)
+        {
+            auto* toggle = toggles.add (new juce::ToggleButton (juce::String (channel)));
+            toggle->setToggleState ((initialMask & (1u << (channel - 1))) != 0, juce::dontSendNotification);
+            toggle->onClick = [this] { readToggles(); };
+            addAndMakeVisible (toggle);
+        }
+
+        allButton.setButtonText ("Todos");
+        allButton.onClick = [this] { setMask (MidiRoute::kAllChannels); };
+        addAndMakeVisible (allButton);
+
+        noneButton.setButtonText ("Ninguno");
+        noneButton.onClick = [this] { setMask (0); };
+        addAndMakeVisible (noneButton);
+
+        setSize (4 * 56 + 16, 4 * 28 + 44);
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (8);
+        auto buttons = area.removeFromBottom (26);
+        allButton.setBounds (buttons.removeFromLeft (buttons.getWidth() / 2).reduced (2, 0));
+        noneButton.setBounds (buttons.reduced (2, 0));
+        area.removeFromBottom (6);
+
+        for (int i = 0; i < toggles.size(); ++i)
+            toggles[i]->setBounds (area.getX() + (i % 4) * 56, area.getY() + (i / 4) * 28, 56, 26);
+    }
+
+private:
+    void readToggles()
+    {
+        juce::uint16 mask = 0;
+
+        for (int i = 0; i < toggles.size(); ++i)
+            if (toggles[i]->getToggleState())
+                mask = (juce::uint16) (mask | (1u << i));
+
+        onChange (mask);
+    }
+
+    void setMask (juce::uint16 mask)
+    {
+        for (int i = 0; i < toggles.size(); ++i)
+            toggles[i]->setToggleState ((mask & (1u << i)) != 0, juce::dontSendNotification);
+
+        readToggles();
+    }
+
+    std::function<void (juce::uint16)> onChange;
+    juce::OwnedArray<juce::ToggleButton> toggles;
+    juce::TextButton allButton, noneButton;
+};
+
+//==============================================================================
+InstancePanel::InstancePanel (InstanceGraph& g, MidiRouter& r, PluginManager& p)
     : graph (g),
+      router (r),
       plugins (p),
       keyboard (keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard)
 {
@@ -207,12 +414,16 @@ InstancePanel::InstancePanel (InstanceGraph& g, PluginManager& p)
 
     keyboardState.addListener (this);
     graph.addListener (this);
+    router.addChangeListener (this);
 
     updateRows();
+    startTimerHz (30);
 }
 
 InstancePanel::~InstancePanel()
 {
+    stopTimer();
+    router.removeChangeListener (this);
     graph.removeListener (this);
     keyboardState.removeListener (this);
 
@@ -335,7 +546,7 @@ void InstancePanel::panic()
 {
     keyboardState.allNotesOff (0); // releases the on-screen keys (note-offs go to their targets)
     heldNotes.clear();
-    graph.panic();
+    router.panic(); // forgets the notes held through MIDI ports, then panics every instance
     setStatus (juce::String::fromUTF8 ("Pánico: all notes off + all sound off en los 16 canales de cada instancia."), false);
 }
 
@@ -390,6 +601,102 @@ void InstancePanel::handleNoteOff (juce::MidiKeyboardState*, int midiChannel, in
 
     graph.sendMidi (it->second, juce::MidiMessage::noteOff (midiChannel, midiNoteNumber, velocity));
     heldNotes.erase (it);
+}
+
+//==============================================================================
+void InstancePanel::updateInstanceRoute (const InstanceId& id, const std::function<void (MidiRoute&)>& change)
+{
+    auto routes = router.getRoutesForInstance (id);
+
+    if (routes.empty())
+        return;
+
+    routes.resize (1); // the provisional UI edits one route per instance
+    change (routes.front());
+    router.setRoutesForInstance (id, routes);
+}
+
+void InstancePanel::setInstanceMidiPort (const InstanceId& id, const juce::String& portName)
+{
+    if (portName.isEmpty())
+    {
+        router.setRoutesForInstance (id, {});
+        return;
+    }
+
+    auto routes = router.getRoutesForInstance (id);
+
+    if (routes.empty())
+    {
+        MidiRoute route;
+        route.instanceId = id;
+        route.channelMask = MidiRoute::kAllChannels;
+        route.remapChannel = 0;
+        routes.push_back (route);
+    }
+
+    routes.resize (1);
+    routes.front().inputDevice = portName;
+    router.setRoutesForInstance (id, routes);
+}
+
+void InstancePanel::setInstanceMidiChannels (const InstanceId& id, juce::uint16 channelMask)
+{
+    updateInstanceRoute (id, [channelMask] (MidiRoute& r) { r.channelMask = channelMask; });
+}
+
+void InstancePanel::setInstanceMidiRemap (const InstanceId& id, int remapChannel)
+{
+    updateInstanceRoute (id, [remapChannel] (MidiRoute& r) { r.remapChannel = juce::jlimit (0, 16, remapChannel); });
+}
+
+void InstancePanel::showChannelSelector (const InstanceId& id, juce::Component& anchor)
+{
+    const auto routes = router.getRoutesForInstance (id);
+
+    if (routes.empty())
+        return;
+
+    juce::Component::SafePointer<InstancePanel> safeThis (this);
+    auto selector = std::make_unique<ChannelSelector> (routes.front().channelMask, [safeThis, id] (juce::uint16 mask)
+    {
+        if (safeThis != nullptr)
+            safeThis->setInstanceMidiChannels (id, mask);
+    });
+
+    juce::CallOutBox::launchAsynchronously (std::move (selector), anchor.getScreenBounds(), nullptr);
+}
+
+InstancePanel::RowInfo InstancePanel::getRowInfo (const InstanceId& id) const
+{
+    RowInfo info;
+
+    for (auto* row : rowList->rows)
+    {
+        if (row->getId() == id)
+        {
+            info.exists = true;
+            info.port = row->getPortText();
+            info.channels = row->getChannelsText();
+            info.mode = row->getModeText();
+            info.ledFlashes = row->getLedFlashes();
+        }
+    }
+
+    return info;
+}
+
+void InstancePanel::changeListenerCallback (juce::ChangeBroadcaster*)
+{
+    updateRows();
+}
+
+void InstancePanel::timerCallback()
+{
+    const auto now = juce::Time::getMillisecondCounterHiRes();
+
+    for (auto* row : rowList->rows)
+        row->updateLed (router.getActivityCount (row->getId()), now);
 }
 
 //==============================================================================
@@ -454,6 +761,7 @@ void InstancePanel::updateRows()
         }
 
         rows[(int) i]->refresh (instance, instance.id == selectedId);
+        rows[(int) i]->refreshMidi (router);
     }
 
     rowList->setSize (viewport.getMaximumVisibleWidth(), juce::jmax (kRowHeight, rows.size() * kRowHeight));

@@ -7,7 +7,7 @@
 namespace vstplayer
 {
 
-MainContent::MainContent (AudioEngine& e, PluginManager& p, InstanceGraph& instances)
+MainContent::MainContent (AudioEngine& e, PluginManager& p, InstanceGraph& instances, MidiRouter& router)
     : engine (e), plugins (p)
 {
     titleLabel.setText ("Sin proyecto cargado", juce::dontSendNotification);
@@ -39,7 +39,7 @@ MainContent::MainContent (AudioEngine& e, PluginManager& p, InstanceGraph& insta
     pluginsButton.onClick = [this] { if (onShowPlugins) onShowPlugins(); };
     addAndMakeVisible (pluginsButton);
 
-    instancePanel = std::make_unique<InstancePanel> (instances, plugins);
+    instancePanel = std::make_unique<InstancePanel> (instances, router, plugins);
     addAndMakeVisible (*instancePanel);
 
     engine.getDeviceManager().addChangeListener (this);

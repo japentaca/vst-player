@@ -340,3 +340,143 @@ cambiados `CMakeLists.txt`, `src/Main.cpp`, `src/app/CommandLine.{h,cpp}`, `src/
   cargando, la carga pendiente se descarta.
 - Observación lateral (etapa 2): con `--show-plugins`, `CloseMainWindow()` apunta a la ventana de
   plugins y no a la principal, así que un script que sólo hace eso no cierra la app.
+
+## Etapa 4 — Entrada MIDI y ruteo  (2026-11-01)
+**Hecho:**
+- `src/engine/MidiRouter.{h,cpp}`:
+  - Modelo `MidiRoute { inputDevice, channelMask (bit n-1 = canal n), instanceId, remapChannel }`
+    con `remapChannel` 0 = `keep` y 1..16 = `remapTo: n`. API: `getRoutes`, `setRoutes`,
+    `getRoutesForInstance`, `setRoutesForInstance`, `panic`, `getPortStatus`, `getRecentMessages`,
+    `getActivityCount`, `setMonitorAllPorts`, `refreshDevices`. Es un `ChangeBroadcaster` (la UI se
+    refresca cuando cambian puertos o rutas). Al quitar una instancia se borran sus rutas.
+  - Puertos por **nombre**. Se abren sólo los que usan las rutas (o todos, con el monitor de la ventana
+    de diagnóstico). Detección de conexión/desconexión con `MidiDeviceListConnection` **y** poll cada 2 s
+    de respaldo: un puerto que desaparece (o reaparece con otro identificador) se cierra y se reabre solo
+    cuando vuelve; la ruta se conserva mientras tanto y la fila lo muestra "(desconectado)" en rojo.
+    Un puerto que existe pero no se pudo abrir se reintenta en cada poll.
+  - Entrega: el `MidiInputCallback` (hilo MIDI) busca la tabla de despacho del puerto bajo un
+    `CriticalSection` y escribe en el `MidiSourceProcessor` (colector) de cada instancia ruteada, que lo
+    entrega al plugin en el bloque siguiente con el offset derivado del timestamp de entrada (los
+    timestamps de `MidiInput` y del colector usan la misma base, `getMillisecondCounterHiRes`).
+    La tabla se reconstruye en el hilo de mensajes y se intercambia bajo el lock; una instancia que se
+    quita sale de la tabla **antes** de que se destruya su nodo (`instanceAboutToBeRemoved`).
+    Cerrar un puerto: se saca de la tabla bajo el lock y se hace `stop()` fuera del lock.
+  - Sólo pasan mensajes de canal (0x80..0xEF); clock, active sensing, sysex, etc. se descartan (quedan
+    en el log como "descartado").
+  - **Notas colgadas**: el router lleva las notas sostenidas por instancia y canal de salida. Un
+    note-on de una nota que ya está sostenida (retrigger sin note-off, o dos canales de origen
+    remapeados al mismo canal) recibe un note-off justo antes. Al cambiar las rutas de una instancia o
+    al desaparecer su puerto, se sueltan sus notas sostenidas. `panic()` olvida ese estado y llama al
+    pánico del grafo (que además vacía los colectores: lo pendiente se descarta en el bloque siguiente).
+- `MidiSourceProcessor`: contadores de note-on / note-off entregados al plugin por canal (diagnóstico
+  y tests).
+- UI (`InstancePanel`, provisoria): cada fila tiene una segunda línea "MIDI:" con LED de actividad
+  (se enciende 120 ms con cada mensaje ruteado, timer de 30 Hz), selector de puerto ("(sin entrada
+  MIDI)" + puertos del sistema), botón "Canales: …" que abre un call-out con 16 toggles + "Todos" /
+  "Ninguno", y modo "Canal original (keep)" / "Remapear → canal n". Elegir un puerto crea la ruta
+  con todos los canales y keep. La UI edita **una ruta por instancia** (el modelo admite varias).
+  Pánico pasa por el router.
+- `src/ui/MidiPortsWindow.{h,cpp}`: Audio → "Puertos MIDI…": estado de cada puerto (abierto / cerrado /
+  DESCONECTADO / error, rutas, mensajes recibidos), log de los últimos 200 mensajes (hora, puerto,
+  bytes, descripción, "→ N instancia(s)" / "sin ruta" / "descartado (sistema)"), "Limpiar log",
+  "Actualizar lista" y "Escuchar todos los puertos mientras esta ventana esté abierta".
+- Línea de comandos nueva: `--midi-ports` (lista entradas/salidas), `--midi-monitor [s]` (abre todas
+  las entradas e imprime lo que llega), `--midi-send "<puerto de salida>" 90:3C:64 +50 80:3C:00 …`
+  (emisor externo: bytes hex separados por `:`, `+N` = esperar N ms). Gancho de GUI `--show-midi-ports`.
+- Self-test nuevo `--midi-selftest` (en `src/app/MidiSelfTest.cpp`, misma infraestructura de pasos que
+  `--instance-selftest`, que sigue igual): el MIDI lo manda **otro proceso** (`VstPlayer.exe
+  --midi-send` lanzado con `ChildProcess`) a la salida de "loopMIDI Port", y la app escucha su entrada.
+  Con `--restart-loopmidi` además termina `loopMIDI.exe` y lo vuelve a lanzar minimizado (prueba de
+  borrar y recrear el puerto). `src/app/ProcessTools.{h,cpp}`: helpers Win32 para eso.
+
+**Archivos:** nuevos `src/engine/MidiRouter.{h,cpp}`, `src/ui/MidiPortsWindow.{h,cpp}`,
+`src/app/MidiSelfTest.cpp`, `src/app/ProcessTools.{h,cpp}`; cambiados `CMakeLists.txt`, `src/Main.cpp`,
+`src/app/CommandLine.{h,cpp}`, `src/app/InstanceSelfTest.{h,cpp}`, `src/app/MainWindow.{h,cpp}`,
+`src/engine/MidiSourceProcessor.h`, `src/ui/InstancePanel.{h,cpp}`, `src/ui/MainContent.{h,cpp}`,
+`docs/progress.md`.
+
+**Verificación:**
+- `pwsh -NoProfile -File .\tools\build.ps1` y `-Config Debug` → OK, sin warnings en nuestro código.
+- Puertos en esta máquina (`VstPlayer.exe --midi-ports`): entrada y salida **"loopMIDI Port"** (único
+  puerto configurado en loopMIDI, `HKCU\Software\Tobias Erichsen\loopMIDI\Ports`); además la salida
+  "Microsoft GS Wavetable Synth". `--midi-send "loopMIDI Port" 90:3C:64 +50 80:3C:00` con
+  `--midi-monitor 4` escuchando → el monitor imprime el note-on y el note-off (loopback confirmado).
+- `.\tools\run-gui-test.ps1 -Config Release -AppArgs '--midi-selftest','--restart-loopmidi'` (desde
+  PowerShell con `&`, no con `pwsh -File`, que no separa el array) → **RESULTADO: OK**, 225 pasos, 61 s,
+  exit 0. Instancias A = Dexed, B = Surge XT, C = Dexed (−30 dB). Rutas puestas por los mismos
+  métodos que usa la UI: A ← canal 1 keep; B ← canales 2,3 remapTo 1; C ← canal 4 keep. Por cada caso se
+  compara cuántos note-on recibió cada plugin en cada canal (contadores del `MidiSourceProcessor`) y el
+  pico en el nodo de ganancia:
+  - canal 1 → sólo A en canal 1 (−47.6 dBFS); canal 2 y 3 → sólo B **en canal 1** (remap, −43.5 dBFS);
+    canal 4 → sólo C en canal 4; canal 5 → nadie, y el log lo registra "sin ruta".
+  - B cambiado a keep por la UI: canal 2 → B en canal 2; canal 3 → B en canal 3.
+  - C con canales 1 y 4: canal 1 → A y C a la vez.
+  - Las filas muestran puerto, "Canales: 2, 3", "Remapear → canal 1"; los tres LED se encendieron.
+  - Retrigger estilo carrilion (on, off, +20 ms, on, +300 ms, off): A recibe 2 on / 2 off y a los 2.5 s
+    está en silencio. Note-on repetido sin note-off: el router agrega el note-off (2 on / 2 off) y A
+    queda en silencio. Dos canales remapeados a uno con la misma nota y un solo note-off: B en silencio.
+  - Nota sostenida en A y cambio de canal de la ruta con la tecla apretada: el router manda el
+    note-off, A en silencio sin el note-off de la fuente.
+  - Pánico con notas sostenidas por el puerto en A y C → silencio; la misma nota después del pánico no
+    genera un note-off de retrigger extra (el estado se limpió).
+  - Clock, active sensing y un sysex: ninguna instancia recibe eventos; 4 entradas "descartado" en el log.
+  - Ventana Audio → Puertos MIDI: "loopMIDI Port  abierto  rutas: 3  mensajes: 40" y las últimas líneas
+    del log, p. ej. `93 48 64  Note on C4 Velocity 100 Channel 4  → 1 instancia(s)`.
+  - **Borrar y recrear el puerto con la app abierta** (`--restart-loopmidi`): con una nota sostenida en
+    A se terminó `loopMIDI.exe` → el router detectó la desconexión, soltó la nota (A en silencio), la
+    ruta siguió apuntando a "loopMIDI Port" y la fila mostró "loopMIDI Port (desconectado)". Se relanzó
+    loopMIDI minimizado → el router reabrió el puerto solo y canal 1 → A, canal 2 → B (remap), canal 4 → C
+    volvieron a llegar y sonar. loopMIDI quedó corriendo otra vez con su puerto (verificado con
+    `--midi-ports`).
+  - Quitar C borra sus rutas (canal 4 → nadie); sacar la entrada de A y B cierra el puerto; se sale con el
+    puerto abierto.
+- Lo mismo en Debug (`-Config Debug -AppArgs '--midi-selftest'`, sin reiniciar loopMIDI): RESULTADO OK,
+  **0 aserciones de JUCE, 0 fugas**.
+- Test de la etapa 3 sin cambios: `run-gui-test.ps1 -Config Release` → OK (59 pasos, exit 0);
+  `-Config Debug -AllowedLeaks VST3HostContextHeadless,AsyncUpdater` → OK, 0 aserciones (sólo la fuga
+  conocida de sforzando).
+- GUI normal con `--show-midi-ports`: ventana "Puertos MIDI" visible (captura revisada), cerrada por
+  `WM_CLOSE` junto con la principal → exit 0. Captura durante el self-test: filas con la línea MIDI
+  bien ubicadas a 1024 de ancho. `settings.xml` sigue en "Windows Audio".
+- **Latencia que reporta `AudioDeviceManager`** (Focusrite, 48 kHz; WASAPI compartido sólo ofrece 480, así
+  que 256/128 son con DirectSound, como en la etapa 3):
+
+  | Tipo | Buffer | `getOutputLatencyInSamples` | `getInputLatencyInSamples` |
+  |---|---|---|---|
+  | DirectSound | 256 (5.33 ms) | 384 (8.00 ms) | 384 |
+  | DirectSound | 128 (2.67 ms) | 192 (4.00 ms) | 192 |
+  | Windows Audio (compartido) | 480 (10 ms) | 480 (10.0 ms) | — |
+
+  Con DirectSound 128 el ruteo canal 1 → A también se verificó (señal en A). A esto se suma hasta un
+  bloque de espera en el colector MIDI (el mensaje entra en el bloque siguiente a su llegada).
+
+**Pendiente / problemas:**
+- **Verificación manual pendiente (usuario), con carrilion en Chrome:**
+  1. loopMIDI corriendo con "loopMIDI Port". Abrir `build\VstPlayer_artefacts\Release\VstPlayer.exe`.
+  2. Agregar instancia → Dexed; otra → Surge XT. En la fila de Dexed: MIDI → "loopMIDI Port",
+     "Canales: …" → "Ninguno" y marcar 1. En Surge XT: "loopMIDI Port", canales 2 y 3,
+     "Remapear → canal 1".
+  3. Audio → "Puertos MIDI…": debe decir "loopMIDI Port  abierto  rutas: 2".
+  4. En carrilion (Chrome) elegir "loopMIDI Port" en su selector de salida MIDI y reproducir algo que use
+     los canales 1, 2 y 3: el canal 1 debe sonar con Dexed y el 2 y 3 con Surge XT; los LED parpadean y
+     el log de "Puertos MIDI" muestra "→ 1 instancia(s)". Cambiar Surge XT a "Canal original (keep)" y
+     verificar que sigue sonando.
+  5. Activar el modo piano de carrilion (política retrigger) y tocar notas sostenidas y repetidas; al
+     parar no debe quedar ninguna nota sonando. Si queda alguna, "Pánico" la corta.
+  6. Con la app abierta, en la ventana de loopMIDI borrar "loopMIDI Port" (botón "-") y volver a crearlo
+     con el mismo nombre ("+"): la fila pasa a "(desconectado)" en rojo y a los ~2 s vuelve sola; Chrome
+     puede necesitar volver a elegir el puerto (eso es del lado de Web MIDI).
+- El "borrar y recrear" automatizado se hizo terminando y relanzando `loopMIDI.exe` (mismo efecto para
+  el driver; no se tocó la configuración de loopMIDI). loopMIDI quedó relanzado **minimizado** con su
+  ventana en la barra de tareas en lugar de sólo en la bandeja, como al iniciar sesión. Ese paso es
+  opcional (`--restart-loopmidi`) para no cortar el puerto si el usuario lo está usando.
+- Se intentó un puerto virtual propio con `teVirtualMIDI64.dll` (instalado por loopMIDI) para no tocar
+  loopMIDI: el puerto aparece en el sistema pero no pasan datos en ninguna dirección (probado con
+  varias combinaciones de flags desde PowerShell y desde la app); se descartó.
+- La UI edita una sola ruta por instancia; varias rutas por instancia (o rutas desde varios puertos) ya
+  las soporta el router y llegarán por el proyecto (etapa 5) o la API (etapa 7).
+- Las rutas no se persisten todavía (etapa 5): al reabrir la app hay que volver a elegir puerto y canales.
+- Si dos puertos del sistema tienen el mismo nombre, se usa el primero.
+- Con remap, dos canales de origen que tocan la misma nota se fusionan: el segundo note-on corta al
+  primero (note-off agregado) y el primer note-off que llegue apaga la nota (no queda colgada, pero
+  puede cortarse antes de lo que la fuente pretendía).
