@@ -36,9 +36,15 @@ public:
     // Per channel output peak of the last processed block (0 = left, 1 = right).
     float getLastBlockPeak (int channel) const noexcept { return lastBlockPeak[channel == 0 ? 0 : 1].load(); }
 
+    // Level meter of the UI: highest absolute output sample of one channel since the last
+    // call (0 = left, 1 = right); resets that channel's hold. Independent of getAndResetPeak.
+    float getAndResetMeterPeak (int channel) noexcept { return meterPeak[channel == 0 ? 0 : 1].exchange (0.0f); }
+
     // Diagnostics (tests): last prepareToPlay arguments and processed block count.
     double getPreparedSampleRate() const noexcept { return preparedSampleRate.load(); }
     int getPreparedBlockSize() const noexcept { return preparedBlockSize.load(); }
+    int getPrepareCount() const noexcept { return prepareCount.load(); }
+    int getLastBlockSize() const noexcept { return lastBlockSize.load(); }
     juce::int64 getBlocksProcessed() const noexcept { return blocksProcessed.load(); }
 
     //==============================================================================
@@ -50,6 +56,7 @@ public:
         smoothedGain.setCurrentAndTargetValue (targetLinearGain());
         preparedSampleRate.store (sampleRate);
         preparedBlockSize.store (maximumExpectedSamplesPerBlock);
+        prepareCount.fetch_add (1);
     }
 
     void releaseResources() override {}
@@ -96,11 +103,15 @@ public:
             const auto p = ch < numChannels ? buffer.getMagnitude (ch, 0, numSamples) : 0.0f;
             lastBlockPeak[ch].store (p);
             blockPeak = juce::jmax (blockPeak, p);
+
+            auto previousMeter = meterPeak[ch].load();
+            while (p > previousMeter && ! meterPeak[ch].compare_exchange_weak (previousMeter, p)) {}
         }
 
         auto previous = peakHold.load();
         while (blockPeak > previous && ! peakHold.compare_exchange_weak (previous, blockPeak)) {}
 
+        lastBlockSize.store (numSamples);
         blocksProcessed.fetch_add (1);
     }
 
@@ -137,6 +148,9 @@ private:
 
     std::atomic<float> peakHold { 0.0f };
     std::atomic<float> lastBlockPeak[2] { 0.0f, 0.0f };
+    std::atomic<float> meterPeak[2] { 0.0f, 0.0f };
+    std::atomic<int> prepareCount { 0 };
+    std::atomic<int> lastBlockSize { 0 };
     std::atomic<double> preparedSampleRate { 0.0 };
     std::atomic<int> preparedBlockSize { 0 };
     std::atomic<juce::int64> blocksProcessed { 0 };

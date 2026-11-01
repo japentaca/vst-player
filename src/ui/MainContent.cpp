@@ -1,122 +1,294 @@
 #include "ui/MainContent.h"
 
 #include "engine/AudioEngine.h"
+#include "engine/GainProcessor.h"
+#include "engine/InstanceGraph.h"
 #include "engine/PluginManager.h"
 #include "ui/InstancePanel.h"
+#include "ui/Theme.h"
 
 namespace vstplayer
 {
 
-MainContent::MainContent (AudioEngine& e, PluginManager& p, InstanceGraph& instances, MidiRouter& router)
-    : engine (e), plugins (p)
+namespace
 {
-    titleLabel.setText (juce::String::fromUTF8 ("Proyecto: Sin título"), juce::dontSendNotification);
-    titleLabel.setFont (juce::FontOptions (18.0f));
-    titleLabel.setJustificationType (juce::Justification::centredLeft);
-    addAndMakeVisible (titleLabel);
+constexpr int kTopLine1Height = 40;
+constexpr int kTopLine2Height = 30;
+constexpr int kStatusHeight = 26;
+constexpr int kTimerHz = 30;
+constexpr int kCpuEveryTicks = 8; // ~4 updates per second
+} // namespace
 
-    for (auto* label : { &audioLabel, &pluginsLabel })
+MainContent::MainContent (AudioEngine& e, PluginManager& p, InstanceGraph& i, MidiRouter& router)
+    : engine (e), plugins (p), instances (i)
+{
+    projectLabel.setFont (juce::FontOptions (19.0f, juce::Font::bold));
+    projectLabel.setMinimumHorizontalScale (0.7f);
+    projectLabel.setText (juce::String::fromUTF8 ("Sin título"), juce::dontSendNotification);
+    addAndMakeVisible (projectLabel);
+
+    const auto setUpButton = [this] (juce::TextButton& b, const char* text, const char* tooltip, std::function<void()>* action)
     {
-        label->setJustificationType (juce::Justification::centredLeft);
-        addAndMakeVisible (*label);
-    }
+        b.setButtonText (juce::String::fromUTF8 (text));
+        b.setTooltip (juce::String::fromUTF8 (tooltip));
+        b.onClick = [action] { if (*action) (*action)(); };
+        addAndMakeVisible (b);
+    };
 
-    errorLabel.setColour (juce::Label::textColourId, juce::Colours::orangered);
-    errorLabel.setJustificationType (juce::Justification::centredLeft);
-    addAndMakeVisible (errorLabel);
+    setUpButton (newButton, "Nuevo", "Proyecto nuevo (Ctrl+N)", &onNew);
+    setUpButton (openButton, "Abrir…", "Abrir un proyecto (Ctrl+O)", &onOpen);
+    setUpButton (recentButton, "Recientes ▾", "Proyectos abiertos hace poco", &onRecent);
+    setUpButton (saveButton, "Guardar", "Guardar el proyecto (Ctrl+S)", &onSave);
+    setUpButton (saveAsButton, "Guardar como…", "Guardar con otro nombre (Ctrl+Shift+S)", &onSaveAs);
+    setUpButton (audioDeviceButton, "Audio", "Configuración de audio: dispositivo, sample rate, buffer", &onShowAudioSettings);
+    setUpButton (midiPortsButton, "Puertos MIDI…", "Estado de los puertos MIDI y últimos mensajes", &onShowMidiPorts);
+    setUpButton (pluginsButton, "Plugins…", "Lista de plugins VST3 y escaneo", &onShowPlugins);
 
-    toneButton.setButtonText (juce::String::fromUTF8 ("Tono de prueba 440 Hz"));
-    toneButton.setClickingTogglesState (true);
-    toneButton.setColour (juce::TextButton::buttonOnColourId, juce::Colours::darkorange);
-    toneButton.onClick = [this] { engine.setTestToneEnabled (toneButton.getToggleState()); };
-    addAndMakeVisible (toneButton);
+    panicButton.setButtonText (juce::String::fromUTF8 ("PÁNICO"));
+    panicButton.setTooltip (juce::String::fromUTF8 ("All notes off + all sound off en todas las instancias (Esc)"));
+    panicButton.setColour (juce::TextButton::buttonColourId, theme::panic);
+    panicButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
+    panicButton.onClick = [this] { instancePanel->panic(); };
+    addAndMakeVisible (panicButton);
 
-    audioButton.setButtonText (juce::String::fromUTF8 ("Configuración de audio…"));
-    audioButton.onClick = [this] { if (onShowAudioSettings) onShowAudioSettings(); };
-    addAndMakeVisible (audioButton);
+    audioInfoLabel.setColour (juce::Label::textColourId, theme::textDim);
+    audioInfoLabel.setMinimumHorizontalScale (0.85f);
+    addAndMakeVisible (audioInfoLabel);
 
-    pluginsButton.setButtonText (juce::String::fromUTF8 ("Plugins…"));
-    pluginsButton.onClick = [this] { if (onShowPlugins) onShowPlugins(); };
-    addAndMakeVisible (pluginsButton);
+    cpuLabel.setJustificationType (juce::Justification::centred);
+    cpuLabel.setTooltip ("Carga del callback de audio (AudioDeviceManager::getCpuUsage)");
+    addAndMakeVisible (cpuLabel);
+
+    addAndMakeVisible (masterMeter);
 
     instancePanel = std::make_unique<InstancePanel> (instances, router, plugins);
+    instancePanel->onStatus = [this] (const juce::String& text, bool isError) { setStatus (text, isError); };
+    instancePanel->onShowPlugins = [this] { if (onShowPlugins) onShowPlugins(); };
     addAndMakeVisible (*instancePanel);
+
+    statusLabel.setFont (juce::FontOptions (13.5f));
+    statusLabel.setMinimumHorizontalScale (0.8f);
+    addAndMakeVisible (statusLabel);
+
+    addChildComponent (progressBar);
+    progressLabel.setFont (juce::FontOptions (13.5f));
+    progressLabel.setColour (juce::Label::textColourId, theme::accent);
+    progressLabel.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (progressLabel);
+
+    hintLabel.setFont (juce::FontOptions (12.5f));
+    hintLabel.setColour (juce::Label::textColourId, theme::textDim);
+    hintLabel.setJustificationType (juce::Justification::centredRight);
+    hintLabel.setText (juce::String::fromUTF8 ("Esc pánico · Ctrl+S guardar · Ctrl+O abrir · Ctrl+N nuevo"), juce::dontSendNotification);
+    addAndMakeVisible (hintLabel);
 
     engine.getDeviceManager().addChangeListener (this);
     plugins.getKnownPluginList().addChangeListener (this);
 
     setSize (1024, 640);
-    refresh();
+    refreshAudio();
+    setStatus (juce::String::fromUTF8 ("Listo. Plugins VST3 conocidos: ") + juce::String (plugins.getKnownPluginList().getNumTypes()) + ".");
+    startTimerHz (kTimerHz);
 }
 
 MainContent::~MainContent()
 {
+    stopTimer();
     plugins.getKnownPluginList().removeChangeListener (this);
     engine.getDeviceManager().removeChangeListener (this);
 }
 
 void MainContent::paint (juce::Graphics& g)
 {
-    g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
+    g.fillAll (theme::background);
+
+    auto area = getLocalBounds();
+    auto top = area.removeFromTop (kTopLine1Height + kTopLine2Height + 6);
+    g.setColour (theme::bar);
+    g.fillRect (top);
+    g.setColour (theme::outline);
+    g.drawHorizontalLine (top.getBottom() - 1, 0.0f, (float) getWidth());
+
+    auto status = area.removeFromBottom (kStatusHeight);
+    g.setColour (theme::bar);
+    g.fillRect (status);
+    g.setColour (theme::outline);
+    g.drawHorizontalLine (status.getY(), 0.0f, (float) getWidth());
 }
 
 void MainContent::resized()
 {
-    auto area = getLocalBounds().reduced (16);
+    auto area = getLocalBounds();
+    auto top = area.removeFromTop (kTopLine1Height + kTopLine2Height + 6).reduced (8, 3);
 
-    titleLabel.setBounds (area.removeFromTop (32));
-    area.removeFromTop (8);
-    audioLabel.setBounds (area.removeFromTop (24));
-    pluginsLabel.setBounds (area.removeFromTop (24));
-    errorLabel.setBounds (area.removeFromTop (errorLabel.getText().isEmpty() ? 0 : 24));
-    area.removeFromTop (12);
+    // Line 1: project + file actions + panic.
+    auto line1 = top.removeFromTop (kTopLine1Height).reduced (0, 4);
+    panicButton.setBounds (line1.removeFromRight (120));
+    line1.removeFromRight (14);
+    saveAsButton.setBounds (line1.removeFromRight (122));
+    line1.removeFromRight (4);
+    saveButton.setBounds (line1.removeFromRight (78));
+    line1.removeFromRight (4);
+    recentButton.setBounds (line1.removeFromRight (100));
+    line1.removeFromRight (4);
+    openButton.setBounds (line1.removeFromRight (70));
+    line1.removeFromRight (4);
+    newButton.setBounds (line1.removeFromRight (64));
+    line1.removeFromRight (10);
+    projectLabel.setBounds (line1);
 
-    auto buttons = area.removeFromTop (32);
-    toneButton.setBounds (buttons.removeFromLeft (200));
-    buttons.removeFromLeft (8);
-    audioButton.setBounds (buttons.removeFromLeft (200));
-    buttons.removeFromLeft (8);
-    pluginsButton.setBounds (buttons.removeFromLeft (140));
+    // Line 2: audio device, rate / buffer, CPU, master meter, MIDI ports, plugins.
+    auto line2 = top.removeFromTop (kTopLine2Height).reduced (0, 2);
+    pluginsButton.setBounds (line2.removeFromRight (90));
+    line2.removeFromRight (4);
+    midiPortsButton.setBounds (line2.removeFromRight (120));
+    line2.removeFromRight (12);
+    masterMeter.setBounds (line2.removeFromRight (110).withSizeKeepingCentre (110, 14));
+    line2.removeFromRight (8);
+    cpuLabel.setBounds (line2.removeFromRight (96));
+    line2.removeFromRight (6);
+    audioLineArea = line2;
+    layOutAudioLine();
 
-    area.removeFromTop (12);
+    // Status bar.
+    auto status = area.removeFromBottom (kStatusHeight).reduced (8, 3);
+    hintLabel.setBounds (status.removeFromRight (juce::jmin (380, status.getWidth() / 3)));
+    status.removeFromRight (8);
+    progressBar.setBounds (status.removeFromRight (110).reduced (0, 2));
+    status.removeFromRight (6);
+    progressLabel.setBounds (status.removeFromRight (juce::jmin (230, status.getWidth() / 3)));
+    status.removeFromRight (6);
+    statusLabel.setBounds (status);
+
     instancePanel->setBounds (area);
 }
 
-void MainContent::setProjectInfo (const juce::String& text)
+void MainContent::setProjectInfo (const juce::String& displayName, const juce::String& path, const juce::String& progress)
 {
-    titleLabel.setText (text, juce::dontSendNotification);
+    projectLabel.setText (displayName, juce::dontSendNotification);
+    projectLabel.setTooltip (path.isNotEmpty() ? path : juce::String::fromUTF8 ("Proyecto sin guardar"));
+    saveButton.setTooltip (path.isNotEmpty() ? "Guardar en " + path + " (Ctrl+S)" : juce::String ("Guardar el proyecto (Ctrl+S)"));
+
+    if (progress.isNotEmpty())
+        progressLabel.setText (progress, juce::dontSendNotification);
+
+    refreshProgress();
 }
 
 void MainContent::setAudioError (const juce::String& message)
 {
-    errorLabel.setText (message.isEmpty() ? juce::String() : "Error de audio: " + message, juce::dontSendNotification);
-    resized();
+    audioError = message;
+    refreshAudio();
+
+    if (message.isNotEmpty())
+        setStatus ("Error de audio: " + message, true);
+}
+
+void MainContent::setStatus (const juce::String& text, bool isError)
+{
+    statusLabel.setText (text, juce::dontSendNotification);
+    statusLabel.setColour (juce::Label::textColourId, isError ? theme::error : theme::text);
+    statusLabel.setTooltip (text);
 }
 
 void MainContent::changeListenerCallback (juce::ChangeBroadcaster* source)
 {
     if (source == &engine.getDeviceManager() && engine.getDeviceManager().getCurrentAudioDevice() != nullptr)
-        setAudioError ({});
+        audioError.clear();
 
-    refresh();
+    refreshAudio();
 }
 
-void MainContent::refresh()
+void MainContent::refreshAudio()
 {
-    audioLabel.setText (engine.describeDevice(), juce::dontSendNotification);
+    const auto open = engine.getDeviceManager().getCurrentAudioDevice() != nullptr;
 
-    auto& list = plugins.getKnownPluginList();
-    int instruments = 0;
+    audioDeviceText = open ? engine.getDeviceName() : juce::String::fromUTF8 ("Sin dispositivo de audio");
+    audioDeviceButton.setTooltip ((open ? engine.getDeviceTypeName() + ": " + engine.getDeviceName() + juce::newLine : juce::String())
+                                  + juce::String::fromUTF8 ("Clic: configuración de audio (dispositivo, sample rate, buffer)"));
+    audioDeviceButton.setColour (juce::TextButton::buttonColourId,
+                                 open && audioError.isEmpty() ? juce::Colour (0xff353a43) : theme::error.darker (0.6f));
 
-    for (auto& d : list.getTypes())
-        instruments += d.isInstrument ? 1 : 0;
+    if (open)
+    {
+        const auto sampleRate = engine.getSampleRate();
+        const auto latencyMs = sampleRate > 0.0 ? 1000.0 * engine.getOutputLatencySamples() / sampleRate : 0.0;
+        audioInfoLabel.setText (juce::String (sampleRate, 0) + juce::String::fromUTF8 (" Hz · buffer ") + juce::String (engine.getBufferSize())
+                                    + juce::String::fromUTF8 (" · ") + juce::String (latencyMs, 1) + " ms",
+                                juce::dontSendNotification);
+        audioInfoLabel.setTooltip (engine.getDeviceTypeName() + juce::String::fromUTF8 (": sample rate, buffer y latencia de salida"));
+    }
+    else
+    {
+        audioInfoLabel.setText (audioError.isNotEmpty() ? audioError : juce::String::fromUTF8 ("Abrí la configuración de audio"),
+                                juce::dontSendNotification);
+    }
 
-    pluginsLabel.setText ("Plugins VST3 conocidos: " + juce::String (list.getNumTypes())
-                              + " (instrumentos: " + juce::String (instruments)
-                              + ", desactivados: " + juce::String (list.getBlacklistedFiles().size()) + ")",
-                          juce::dontSendNotification);
+    layOutAudioLine();
+}
 
-    toneButton.setToggleState (engine.isTestToneEnabled(), juce::dontSendNotification);
+void MainContent::layOutAudioLine()
+{
+    // Device button as wide as its text (up to what leaves room for the rate / buffer line);
+    // a name that is still too long is shortened with "…" (the full name is in the tooltip).
+    auto line = audioLineArea;
+    const auto font = getLookAndFeel().getTextButtonFont (audioDeviceButton, line.getHeight());
+    const auto padding = 2 * juce::jmin (juce::roundToInt (font.getHeight() * 0.6f), 2 + line.getHeight() / 4) + 6;
+    const auto infoWidth = juce::GlyphArrangement::getStringWidthInt (audioInfoLabel.getFont(), audioInfoLabel.getText()) + 12;
+    const auto maxButton = juce::jmax (120, line.getWidth() - juce::jmin (infoWidth, line.getWidth() / 2) - 8);
+    const auto wanted = juce::GlyphArrangement::getStringWidthInt (font, audioDeviceText) + padding;
+    const auto buttonWidth = juce::jmin (wanted, maxButton);
+
+    auto text = audioDeviceText;
+
+    while (text.length() > 4 && juce::GlyphArrangement::getStringWidth (font, text) > (float) (buttonWidth - padding))
+        text = text.dropLastCharacters (2).trimEnd() + juce::String::fromUTF8 ("…");
+
+    audioDeviceButton.setButtonText (text);
+    audioDeviceButton.setBounds (line.removeFromLeft (buttonWidth));
+    line.removeFromLeft (8);
+    audioInfoLabel.setBounds (line);
+}
+
+void MainContent::refreshProgress()
+{
+    const auto numLoading = instances.getNumLoading();
+    const auto scanning = isScanning && isScanning();
+    const auto busy = numLoading > 0 || scanning;
+
+    if (busy)
+    {
+        juce::String text;
+
+        if (scanning)
+            text = juce::String::fromUTF8 ("Escaneando plugins…");
+        else
+            text = juce::String::fromUTF8 ("Cargando ") + juce::String (numLoading)
+                   + (numLoading == 1 ? juce::String (" plugin") : juce::String (" plugins")) + juce::String::fromUTF8 ("…");
+
+        progressLabel.setText (text, juce::dontSendNotification);
+    }
+    else
+    {
+        progressLabel.setText ({}, juce::dontSendNotification);
+    }
+
+    progressBar.setVisible (busy);
+}
+
+void MainContent::timerCallback()
+{
+    if (auto* mixer = engine.getMixer())
+        masterMeter.pushPeaks (mixer->getAndResetMeterPeak (0), mixer->getAndResetMeterPeak (1));
+
+    if (++tickCount % kCpuEveryTicks != 0)
+        return;
+
+    const auto cpu = 100.0 * engine.getCpuUsage();
+    cpuLabel.setText ("CPU " + juce::String (cpu, 1) + " %", juce::dontSendNotification);
+    cpuLabel.setColour (juce::Label::textColourId, cpu > 80.0 ? theme::error : cpu > 50.0 ? theme::warning : theme::text);
+
+    refreshProgress();
 }
 
 } // namespace vstplayer

@@ -11,17 +11,23 @@ class AppSettings;
 class AudioEngine;
 class InstanceGraph;
 class InstancePanel;
+class MainContent;
 class MidiPortsWindow;
 class MidiRouter;
 class PluginManager;
 class PluginListWindow;
 class ProjectController;
 
-// Main application window: menu bar (Archivo, Audio, Ayuda) and the provisional content.
-// Archivo: Nuevo, Abrir…, Guardar, Guardar como…, Recientes, Plugins…, Salir. Every action that
-// would drop the current project (Nuevo, Abrir, Recientes, Salir, close button) first asks
-// about unsaved changes. Title: "VstPlayer — <proyecto>" with " *" when modified.
+// Main application window: menu bar (Archivo, Audio, Ayuda) and MainContent (top bar, instance
+// rows, keyboard, status bar). Archivo: Nuevo, Abrir…, Guardar, Guardar como…, Recientes,
+// Plugins…, Salir; the same actions are buttons of the top bar. Every action that would drop the
+// current project (Nuevo, Abrir, Recientes, Salir, close button) first asks about unsaved
+// changes. Title: "VstPlayer — <proyecto>" with " *" when modified.
+// Keyboard shortcuts (ApplicationCommandManager, shown in the menus): Ctrl+N, Ctrl+O, Ctrl+S,
+// Ctrl+Shift+S, Esc = pánico. They work wherever the focus is inside the main window (a text
+// being edited keeps its own Esc).
 class MainWindow final : public juce::DocumentWindow,
+                         public juce::ApplicationCommandTarget,
                          private juce::MenuBarModel,
                          private juce::ChangeListener
 {
@@ -40,7 +46,12 @@ public:
     void setAudioError (const juce::String& message);
     // Opens the plugin list window; startScan = also press "Escanear".
     void showPluginList (bool startScan = false);
+    PluginListWindow* getPluginListWindow() const noexcept { return pluginListWindow.get(); }
     InstancePanel& getInstancePanel();
+    MainContent& getMainContent();
+    juce::ApplicationCommandManager& getCommandManager() noexcept { return commandManager; }
+    // Shows the "Recientes" popup under the top bar button.
+    void showRecentMenu();
     // Audio > "Puertos MIDI…" (diagnostic window: port states and last messages).
     void showMidiPorts();
     MidiPortsWindow* getMidiPortsWindow() const noexcept { return midiPortsWindow.get(); }
@@ -74,6 +85,9 @@ public:
     // false (self-tests): do not remember the last project folder in settings.xml.
     bool rememberProjectFolder = true;
     std::function<void (const juce::String&)> onMessage;
+    // Self-tests: replaces the native file chooser (Abrir / Guardar como). Returns the chosen
+    // file, or juce::File() for "cancel". forSave = Guardar como.
+    std::function<juce::File (bool forSave)> fileChooserOverride;
     // Number of times the "cambios sin guardar" question was asked (shown or overridden).
     int getNumSavePrompts() const noexcept { return numSavePrompts; }
 
@@ -99,8 +113,18 @@ private:
         cmdSave,
         cmdSaveAs,
         cmdClearRecent,
+        cmdPanic,
         cmdRecentBase = 100 // + index
     };
+
+    // ApplicationCommandTarget
+    juce::ApplicationCommandTarget* getNextCommandTarget() override { return nullptr; }
+    void getAllCommands (juce::Array<juce::CommandID>& commands) override;
+    void getCommandInfo (juce::CommandID commandID, juce::ApplicationCommandInfo& result) override;
+    bool perform (const InvocationInfo& info) override;
+
+    void chooseFile (bool forSave, const juce::File& start, std::function<void (const juce::File&)> chosen);
+    juce::PopupMenu buildRecentMenu();
 
     // MenuBarModel
     juce::StringArray getMenuBarNames() override;
@@ -122,6 +146,7 @@ private:
     MidiRouter& router;
     ProjectController& project;
 
+    juce::ApplicationCommandManager commandManager;
     std::unique_ptr<PluginListWindow> pluginListWindow;
     std::unique_ptr<MidiPortsWindow> midiPortsWindow;
     juce::Component::SafePointer<juce::DialogWindow> audioSettingsWindow;

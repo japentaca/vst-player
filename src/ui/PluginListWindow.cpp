@@ -170,6 +170,14 @@ public:
             listComponent.scanFor (plugins.getVst3Format());
     }
 
+    void scanFiles (const juce::StringArray& files)
+    {
+        if (! listComponent.isScanning())
+            listComponent.scanFor (plugins.getVst3Format(), files);
+    }
+
+    bool isScanning() const { return listComponent.isScanning(); }
+
     void resized() override
     {
         auto area = getLocalBounds().reduced (6);
@@ -223,6 +231,20 @@ void PluginListWindow::startScan()
 {
     if (auto* content = dynamic_cast<Content*> (getContentComponent()))
         content->startScan();
+}
+
+void PluginListWindow::scanFiles (const juce::StringArray& files)
+{
+    if (auto* content = dynamic_cast<Content*> (getContentComponent()))
+        content->scanFiles (files);
+}
+
+bool PluginListWindow::isScanning() const
+{
+    if (auto* content = dynamic_cast<Content*> (getContentComponent()))
+        return content->isScanning();
+
+    return false;
 }
 
 void PluginListWindow::syncExtraFolders()

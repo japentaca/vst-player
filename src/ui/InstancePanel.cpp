@@ -3,16 +3,22 @@
 #include "engine/GainProcessor.h"
 #include "engine/MidiRouter.h"
 #include "engine/PluginManager.h"
+#include "ui/AddInstanceDialog.h"
+#include "ui/LevelMeter.h"
 #include "ui/PluginEditorWindow.h"
+#include "ui/Theme.h"
 
 namespace vstplayer
 {
 
 namespace
 {
-constexpr int kRowHeight = 66;
+constexpr int kRowHeight = 64;
+constexpr int kRowGap = 4;
 constexpr double kLedHoldMs = 120.0;
-constexpr int kKeyboardHeight = 90;
+constexpr int kKeyboardHeight = 84;
+constexpr int kHeaderHeight = 34;
+constexpr int kKeyboardHeaderHeight = 26;
 
 juce::String describeState (const Instance& instance)
 {
@@ -26,6 +32,34 @@ juce::String describeState (const Instance& instance)
 
     return instance.description.name + juce::String::fromUTF8 (" — ") + instance.description.manufacturerName;
 }
+
+// Activity LED: lit for a moment after each new routed message.
+class Led final : public juce::Component
+{
+public:
+    Led() { setInterceptsMouseClicks (false, false); }
+
+    void setLit (bool shouldBeLit)
+    {
+        if (lit != shouldBeLit)
+        {
+            lit = shouldBeLit;
+            repaint();
+        }
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto area = getLocalBounds().toFloat().withSizeKeepingCentre (11.0f, 11.0f);
+        g.setColour (lit ? theme::ok : juce::Colour (0xff1f3324));
+        g.fillEllipse (area);
+        g.setColour (juce::Colours::black.withAlpha (0.6f));
+        g.drawEllipse (area, 1.0f);
+    }
+
+private:
+    bool lit = false;
+};
 } // namespace
 
 //==============================================================================
@@ -37,31 +71,51 @@ public:
     {
         nameLabel.setEditable (false, true, false);
         nameLabel.setTooltip ("Doble clic para renombrar");
+        nameLabel.setFont (juce::FontOptions (15.5f, juce::Font::bold));
+        nameLabel.setMinimumHorizontalScale (0.8f);
         nameLabel.onTextChange = [this] { owner.graph.setName (id, nameLabel.getText()); };
         nameLabel.addMouseListener (this, false);
         addAndMakeVisible (nameLabel);
 
         stateLabel.setInterceptsMouseClicks (false, false);
-        stateLabel.setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+        stateLabel.setColour (juce::Label::textColourId, theme::textDim);
+        stateLabel.setMinimumHorizontalScale (0.9f);
         addAndMakeVisible (stateLabel);
 
+        addChildComponent (loadingBar);
+        loadingBar.setTextToDisplay (juce::String::fromUTF8 ("cargando…"));
+
+        addAndMakeVisible (meter);
+
         gainSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-        gainSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 64, 20);
+        gainSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 62, 20);
         gainSlider.setRange (GainProcessor::kMinGainDb, GainProcessor::kMaxGainDb, 0.1);
         gainSlider.setTextValueSuffix (" dB");
         gainSlider.setDoubleClickReturnValue (true, 0.0);
+        gainSlider.setTooltip (juce::String::fromUTF8 ("Ganancia (doble clic: 0 dB)"));
         gainSlider.onValueChange = [this] { owner.graph.setGainDb (id, (float) gainSlider.getValue()); };
         addAndMakeVisible (gainSlider);
 
-        muteButton.setButtonText ("Mute");
+        muteButton.setButtonText ("M");
+        muteButton.setTooltip ("Mute");
+        muteButton.setClickingTogglesState (true);
+        muteButton.setColour (juce::TextButton::buttonOnColourId, theme::mute);
+        muteButton.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
         muteButton.onClick = [this] { owner.graph.setMute (id, muteButton.getToggleState()); };
         addAndMakeVisible (muteButton);
 
         editorButton.setButtonText ("Editor");
+        editorButton.setTooltip ("Abrir la interfaz del plugin");
         editorButton.onClick = [this] { owner.openEditor (id); };
         addAndMakeVisible (editorButton);
 
+        duplicateButton.setButtonText ("Duplicar");
+        duplicateButton.setTooltip (juce::String::fromUTF8 ("Otra instancia con el mismo plugin, estado, ganancia y entrada MIDI"));
+        duplicateButton.onClick = [this] { owner.duplicateInstance (id); };
+        addAndMakeVisible (duplicateButton);
+
         removeButton.setButtonText ("Quitar");
+        removeButton.setTooltip ("Quitar esta instancia");
         // Deferred: removing destroys this row, which must not happen inside its own click.
         removeButton.onClick = [this]
         {
@@ -75,12 +129,12 @@ public:
         };
         addAndMakeVisible (removeButton);
 
-        midiLabel.setText ("MIDI:", juce::dontSendNotification);
+        midiLabel.setText ("MIDI", juce::dontSendNotification);
         midiLabel.setInterceptsMouseClicks (false, false);
-        midiLabel.setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+        midiLabel.setColour (juce::Label::textColourId, theme::textDim);
+        midiLabel.setFont (juce::FontOptions (13.0f));
         addAndMakeVisible (midiLabel);
 
-        led.setInterceptsMouseClicks (false, false);
         addAndMakeVisible (led);
 
         portBox.setTooltip ("Puerto de entrada MIDI");
@@ -112,34 +166,6 @@ public:
         addAndMakeVisible (modeBox);
     }
 
-    // Activity LED: lit for a moment after each new routed message.
-    class Led final : public juce::Component
-    {
-    public:
-        void setLit (bool shouldBeLit)
-        {
-            if (lit != shouldBeLit)
-            {
-                lit = shouldBeLit;
-                repaint();
-            }
-        }
-
-        bool isLit() const noexcept { return lit; }
-
-        void paint (juce::Graphics& g) override
-        {
-            auto area = getLocalBounds().toFloat().withSizeKeepingCentre (12.0f, 12.0f);
-            g.setColour (lit ? juce::Colour (0xff4cff6a) : juce::Colour (0xff1f3a24));
-            g.fillEllipse (area);
-            g.setColour (juce::Colours::black.withAlpha (0.6f));
-            g.drawEllipse (area, 1.0f);
-        }
-
-    private:
-        bool lit = false;
-    };
-
     void refreshMidi (const MidiRouter& router)
     {
         const auto routes = router.getRoutesForInstance (id);
@@ -165,7 +191,7 @@ public:
 
         portBox.setSelectedId (route != nullptr ? portItems.indexOf (current) + 2 : 1, juce::dontSendNotification);
         const auto portOk = route == nullptr || router.isPortOpen (current);
-        portBox.setColour (juce::ComboBox::textColourId, portOk ? juce::Colours::white : juce::Colours::orangered);
+        portBox.setColour (juce::ComboBox::textColourId, portOk ? theme::text : theme::error);
         portBox.setTooltip (portOk ? juce::String ("Puerto de entrada MIDI")
                                    : juce::String::fromUTF8 ("El puerto no está disponible: se reabre solo cuando vuelva"));
 
@@ -175,7 +201,7 @@ public:
         modeBox.setEnabled (route != nullptr);
     }
 
-    void updateLed (juce::int64 activityCount, double nowMs)
+    void tick (const Instance* instance, juce::int64 activityCount, double nowMs)
     {
         if (activityCount != lastActivity)
         {
@@ -185,14 +211,26 @@ public:
         }
 
         led.setLit (nowMs - lastActivityMs < kLedHoldMs);
+
+        auto* gain = instance != nullptr ? instance->getGainProcessor() : nullptr;
+
+        if (gain != nullptr)
+            meter.pushPeaks (gain->getAndResetMeterPeak (0), gain->getAndResetMeterPeak (1));
+        else
+            meter.pushPeaks (0.0f, 0.0f);
     }
 
     int getLedFlashes() const noexcept { return flashes; }
     juce::String getStateText() const { return stateLabel.getText(); }
+    juce::String getNameText() const { return nameLabel.getText(); }
     bool isShownAsMissing() const noexcept { return missingPlugin; }
+    bool isLoadingIndicatorVisible() const { return loadingBar.isVisible(); }
     juce::String getPortText() const { return portBox.getText(); }
     juce::String getChannelsText() const { return channelsButton.getButtonText(); }
     juce::String getModeText() const { return modeBox.getText(); }
+    float getMeterDb (int channel) const { return meter.getLevelDb (channel); }
+    bool isEditorEnabled() const { return editorButton.isEnabled(); }
+    bool isDuplicateEnabled() const { return duplicateButton.isEnabled(); }
 
     void refresh (const Instance& instance, bool isSelected)
     {
@@ -201,13 +239,19 @@ public:
 
         stateLabel.setText (describeState (instance), juce::dontSendNotification);
         const auto isProblem = instance.state == Instance::State::failed || instance.state == Instance::State::missing;
-        stateLabel.setColour (juce::Label::textColourId, isProblem ? juce::Colours::orangered : juce::Colours::lightgrey);
+        stateLabel.setColour (juce::Label::textColourId, isProblem ? theme::error : theme::textDim);
+        stateLabel.setTooltip (instance.description.fileOrIdentifier
+                               + (instance.errorMessage.isNotEmpty() ? "\n" + instance.errorMessage : juce::String()));
 
-        if (missingPlugin != (instance.state == Instance::State::missing))
+        if (missingPlugin != isProblem)
         {
-            missingPlugin = ! missingPlugin;
+            missingPlugin = isProblem;
             repaint();
         }
+
+        const auto loading = instance.state == Instance::State::loading;
+        loadingBar.setVisible (loading);
+        meter.setVisible (! loading);
 
         gainSlider.setValue (instance.gainDb, juce::dontSendNotification);
         muteButton.setToggleState (instance.mute, juce::dontSendNotification);
@@ -216,6 +260,10 @@ public:
         gainSlider.setEnabled (ready);
         muteButton.setEnabled (ready);
         editorButton.setEnabled (ready);
+        duplicateButton.setEnabled (ready);
+
+        if (! ready)
+            meter.reset();
 
         if (selected != isSelected)
         {
@@ -230,50 +278,59 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        auto bounds = getLocalBounds().reduced (0, 1).toFloat();
-        g.setColour (missingPlugin ? juce::Colour (0xff5a1e1e) : selected ? juce::Colour (0xff2d4f6e) : juce::Colour (0xff2a2a2a));
-        g.fillRoundedRectangle (bounds, 4.0f);
+        auto bounds = getLocalBounds().toFloat().reduced (0.5f);
+        g.setColour (missingPlugin ? theme::rowMissing : selected ? theme::rowSelected : theme::row);
+        g.fillRoundedRectangle (bounds, 5.0f);
 
-        if (missingPlugin)
-        {
-            // Plugin not installed: the row stays (its state is kept in the project) in red.
-            g.setColour (juce::Colours::red);
-            g.drawRoundedRectangle (bounds.reduced (0.5f), 4.0f, 1.0f);
-        }
+        g.setColour (missingPlugin ? theme::error : selected ? theme::accent.withAlpha (0.7f) : theme::outline);
+        g.drawRoundedRectangle (bounds, 5.0f, 1.0f);
 
         if (selected)
         {
-            g.setColour (juce::Colours::skyblue);
-            g.fillRect (bounds.removeFromLeft (4.0f));
+            g.setColour (theme::accent);
+            g.fillRoundedRectangle (bounds.removeFromLeft (4.0f), 2.0f);
         }
     }
 
     void resized() override
     {
-        auto area = getLocalBounds().reduced (8, 4);
-        auto midiLine = area.removeFromBottom (26);
-        area.removeFromBottom (2);
+        auto area = getLocalBounds().reduced (10, 5);
+        auto line1 = area.removeFromTop (26);
+        area.removeFromTop (3);
+        auto line2 = area.removeFromTop (24);
 
-        midiLabel.setBounds (midiLine.removeFromLeft (40));
-        led.setBounds (midiLine.removeFromLeft (20));
-        midiLine.removeFromLeft (6);
-        portBox.setBounds (midiLine.removeFromLeft (240));
-        midiLine.removeFromLeft (6);
-        channelsButton.setBounds (midiLine.removeFromLeft (220));
-        midiLine.removeFromLeft (6);
-        modeBox.setBounds (midiLine.removeFromLeft (210));
+        // Line 1: name | plugin ... meter | gain | M | Editor | Duplicar | Quitar
+        const auto width = line1.getWidth();
+        const auto nameWidth = juce::jlimit (110, 220, width / 6);
+        nameLabel.setBounds (line1.removeFromLeft (nameWidth));
+        line1.removeFromLeft (6);
 
-        nameLabel.setBounds (area.removeFromLeft (170));
-        area.removeFromLeft (4);
-        removeButton.setBounds (area.removeFromRight (72));
-        area.removeFromRight (6);
-        editorButton.setBounds (area.removeFromRight (72));
-        area.removeFromRight (6);
-        muteButton.setBounds (area.removeFromRight (64));
-        area.removeFromRight (6);
-        gainSlider.setBounds (area.removeFromRight (230));
-        area.removeFromRight (6);
-        stateLabel.setBounds (area);
+        removeButton.setBounds (line1.removeFromRight (66));
+        line1.removeFromRight (6);
+        duplicateButton.setBounds (line1.removeFromRight (76));
+        line1.removeFromRight (6);
+        editorButton.setBounds (line1.removeFromRight (64));
+        line1.removeFromRight (10);
+        muteButton.setBounds (line1.removeFromRight (30));
+        line1.removeFromRight (6);
+        gainSlider.setBounds (line1.removeFromRight (juce::jlimit (150, 240, width / 5)));
+        line1.removeFromRight (6);
+        const auto meterArea = line1.removeFromRight (juce::jlimit (80, 160, width / 9)).withSizeKeepingCentre (juce::jlimit (80, 160, width / 9), 14);
+        meter.setBounds (meterArea);
+        loadingBar.setBounds (meterArea.withHeight (18).withCentre (meterArea.getCentre()));
+        line1.removeFromRight (8);
+        stateLabel.setBounds (line1);
+
+        // Line 2: MIDI (led) | port | channels | mode
+        midiLabel.setBounds (line2.removeFromLeft (38));
+        led.setBounds (line2.removeFromLeft (16));
+        line2.removeFromLeft (6);
+        const auto comboWidth = juce::jlimit (170, 300, line2.getWidth() / 3);
+        portBox.setBounds (line2.removeFromLeft (comboWidth));
+        line2.removeFromLeft (6);
+        channelsButton.setBounds (line2.removeFromLeft (juce::jlimit (160, 260, line2.getWidth() / 3)));
+        line2.removeFromLeft (6);
+        modeBox.setBounds (line2.removeFromLeft (juce::jmin (210, line2.getWidth())));
     }
 
 private:
@@ -284,9 +341,13 @@ private:
 
     juce::Label nameLabel;
     juce::Label stateLabel;
+    double loadingProgress = -1.0; // indeterminate
+    juce::ProgressBar loadingBar { loadingProgress };
+    LevelMeter meter;
     juce::Slider gainSlider;
-    juce::ToggleButton muteButton;
+    juce::TextButton muteButton;
     juce::TextButton editorButton;
+    juce::TextButton duplicateButton;
     juce::TextButton removeButton;
 
     juce::Label midiLabel;
@@ -313,9 +374,10 @@ public:
     {
         if (rows.isEmpty())
         {
-            g.setColour (juce::Colours::grey);
-            g.drawText (juce::String::fromUTF8 ("Sin instancias. Usá \"Agregar instancia\"."),
-                        getLocalBounds().reduced (8), juce::Justification::topLeft);
+            g.setColour (theme::textDim);
+            g.setFont (juce::FontOptions (15.0f));
+            g.drawFittedText (juce::String::fromUTF8 ("Sin instancias.\nUsá \"Agregar instancia…\" o abrí un proyecto (Ctrl+O)."),
+                              getLocalBounds().reduced (12), juce::Justification::centred, 3);
         }
     }
 
@@ -326,7 +388,7 @@ public:
         for (auto* row : rows)
         {
             row->setBounds (0, y, getWidth(), kRowHeight);
-            y += kRowHeight;
+            y += kRowHeight + kRowGap;
         }
     }
 };
@@ -403,30 +465,36 @@ InstancePanel::InstancePanel (InstanceGraph& g, MidiRouter& r, PluginManager& p)
       plugins (p),
       keyboard (keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard)
 {
-    addButton.setButtonText (juce::String::fromUTF8 ("Agregar instancia…"));
-    addButton.onClick = [this] { showAddMenu(); };
+    titleLabel.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+    titleLabel.setColour (juce::Label::textColourId, theme::textDim);
+    addAndMakeVisible (titleLabel);
+
+    addButton.setButtonText (juce::String::fromUTF8 ("+ Agregar instancia…"));
+    addButton.setTooltip (juce::String::fromUTF8 ("Elegir un plugin de la lista (búsqueda, sólo instrumentos, por fabricante)"));
+    addButton.setColour (juce::TextButton::buttonColourId, theme::accent.darker (0.45f));
+    addButton.onClick = [this] { showAddDialog(); };
     addAndMakeVisible (addButton);
-
-    panicButton.setButtonText (juce::String::fromUTF8 ("Pánico"));
-    panicButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff8b1e1e));
-    panicButton.onClick = [this] { panic(); };
-    addAndMakeVisible (panicButton);
-
-    statusLabel.setJustificationType (juce::Justification::centredLeft);
-    addAndMakeVisible (statusLabel);
-
-    keyboardLabel.setJustificationType (juce::Justification::centredLeft);
-    keyboardLabel.setColour (juce::Label::textColourId, juce::Colours::lightgrey);
-    addAndMakeVisible (keyboardLabel);
 
     rowList = std::make_unique<RowList>();
     viewport.setViewedComponent (rowList.get(), false);
     viewport.setScrollBarsShown (true, false);
+    viewport.setScrollBarThickness (10);
     addAndMakeVisible (viewport);
+
+    keyboardToggle.setTooltip ("Mostrar u ocultar el teclado virtual");
+    keyboardToggle.onClick = [this] { setKeyboardVisible (! keyboardVisible); };
+    addAndMakeVisible (keyboardToggle);
+
+    keyboardLabel.setJustificationType (juce::Justification::centredLeft);
+    keyboardLabel.setColour (juce::Label::textColourId, theme::textDim);
+    keyboardLabel.setInterceptsMouseClicks (false, false);
+    addAndMakeVisible (keyboardLabel);
 
     keyboard.setMidiChannel (kKeyboardChannel);
     keyboard.setAvailableRange (24, 108);
     keyboard.setLowestVisibleKey (48);
+    keyboard.setKeyWidth (22.0f);
+    keyboard.setScrollButtonWidth (24);
     addAndMakeVisible (keyboard);
 
     keyboardState.addListener (this);
@@ -434,6 +502,7 @@ InstancePanel::InstancePanel (InstanceGraph& g, MidiRouter& r, PluginManager& p)
     router.addChangeListener (this);
 
     updateRows();
+    updateKeyboardHeader();
     startTimerHz (30);
 }
 
@@ -444,6 +513,7 @@ InstancePanel::~InstancePanel()
     graph.removeListener (this);
     keyboardState.removeListener (this);
 
+    addDialog = nullptr;
     // Editors go before the instances (InstanceGraph is destroyed after this panel).
     editorWindows.clear();
 
@@ -455,12 +525,45 @@ InstancePanel::~InstancePanel()
 InstanceId InstancePanel::addInstance (const juce::PluginDescription& description)
 {
     setStatus (juce::String::fromUTF8 ("Cargando ") + description.name + juce::String::fromUTF8 ("…"), false);
-    return graph.addInstance (description);
+    const auto id = graph.addInstance (description);
+
+    // The new row is the keyboard target and is scrolled into view.
+    selectInstance (id);
+    viewport.setViewPosition (0, juce::jmax (0, rowList->getHeight() - viewport.getMaximumVisibleHeight()));
+    return id;
 }
 
 void InstancePanel::removeInstance (const InstanceId& id)
 {
     graph.removeInstance (id); // instanceAboutToBeRemoved closes the editor first
+}
+
+InstanceId InstancePanel::duplicateInstance (const InstanceId& sourceId)
+{
+    const auto* source = graph.findInstance (sourceId);
+
+    if (source == nullptr || ! source->isReady())
+        return {};
+
+    const auto sourceName = source->name;
+    const auto newId = graph.duplicateInstance (sourceId);
+
+    if (newId.isEmpty())
+        return {};
+
+    // Same MIDI input as the original.
+    auto routes = router.getRoutesForInstance (sourceId);
+
+    for (auto& route : routes)
+        route.instanceId = newId;
+
+    if (! routes.empty())
+        router.setRoutesForInstance (newId, routes);
+
+    setStatus (juce::String::fromUTF8 ("Duplicando ") + sourceName + juce::String::fromUTF8 ("…"), false);
+    selectInstance (newId);
+    viewport.setViewPosition (0, juce::jmax (0, rowList->getHeight() - viewport.getMaximumVisibleHeight()));
+    return newId;
 }
 
 bool InstancePanel::openEditor (const InstanceId& id)
@@ -586,6 +689,75 @@ void InstancePanel::panic()
 }
 
 //==============================================================================
+void InstancePanel::showAddDialog()
+{
+    if (addDialog != nullptr)
+    {
+        addDialog->setVisible (true);
+        addDialog->toFront (true);
+        return;
+    }
+
+    addDialog = std::make_unique<AddInstanceDialog> (plugins.getKnownPluginList(), getTopLevelComponent());
+
+    juce::Component::SafePointer<InstancePanel> safeThis (this);
+    addDialog->onAdd = [safeThis] (const juce::PluginDescription& description)
+    {
+        if (safeThis != nullptr)
+            safeThis->addInstance (description);
+    };
+    addDialog->onClose = [safeThis]
+    {
+        // Deferred: the dialog may be inside one of its own callbacks.
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (safeThis != nullptr && safeThis->addDialog != nullptr && ! safeThis->addDialog->isVisible())
+                safeThis->addDialog = nullptr;
+        });
+    };
+    addDialog->onShowPlugins = [safeThis]
+    {
+        if (safeThis != nullptr && safeThis->onShowPlugins)
+            safeThis->onShowPlugins();
+    };
+}
+
+void InstancePanel::closeAddDialog()
+{
+    addDialog = nullptr;
+}
+
+void InstancePanel::setKeyboardVisible (bool shouldBeVisible)
+{
+    if (keyboardVisible == shouldBeVisible)
+        return;
+
+    if (! shouldBeVisible)
+        keyboardState.allNotesOff (0); // nothing stays held under a hidden keyboard
+
+    keyboardVisible = shouldBeVisible;
+    keyboard.setVisible (keyboardVisible);
+    updateKeyboardHeader();
+    resized();
+
+    if (onKeyboardVisibilityChanged)
+        onKeyboardVisibilityChanged (keyboardVisible);
+}
+
+void InstancePanel::updateKeyboardHeader()
+{
+    keyboardToggle.setButtonText (keyboardVisible ? juce::String::fromUTF8 ("▾ Teclado") : juce::String::fromUTF8 ("▸ Teclado"));
+
+    const auto* selected = graph.findInstance (selectedId);
+    keyboardLabel.setText (selected != nullptr
+                               ? juce::String::fromUTF8 ("canal 1 → ") + selected->name
+                                     + (keyboardVisible ? juce::String::fromUTF8 ("   (clic en el teclado y usá A W S E D F… para tocar con la PC)")
+                                                        : juce::String())
+                               : juce::String::fromUTF8 ("elegí una instancia (clic en su fila) para tocarla"),
+                           juce::dontSendNotification);
+}
+
+//==============================================================================
 void InstancePanel::instanceListChanged()
 {
     updateRows();
@@ -610,7 +782,9 @@ void InstancePanel::instanceLoadFinished (const Instance& instance)
         return;
     }
 
-    setStatus (instance.name + juce::String::fromUTF8 (" cargado."), false);
+    setStatus (instance.name + juce::String::fromUTF8 (" cargado (") + juce::String (juce::roundToInt (graph.getLastCreationMs()))
+                   + " ms).",
+               false);
 
     if (graph.findInstance (selectedId) == nullptr)
         selectedId = instance.id;
@@ -646,7 +820,7 @@ void InstancePanel::updateInstanceRoute (const InstanceId& id, const std::functi
     if (routes.empty())
         return;
 
-    routes.resize (1); // the provisional UI edits one route per instance
+    routes.resize (1); // the UI edits one route per instance
     change (routes.front());
     router.setRoutesForInstance (id, routes);
 }
@@ -715,8 +889,14 @@ InstancePanel::RowInfo InstancePanel::getRowInfo (const InstanceId& id) const
             info.channels = row->getChannelsText();
             info.mode = row->getModeText();
             info.ledFlashes = row->getLedFlashes();
+            info.name = row->getNameText();
             info.stateText = row->getStateText();
             info.shownAsMissing = row->isShownAsMissing();
+            info.loadingIndicator = row->isLoadingIndicatorVisible();
+            info.meterDb[0] = row->getMeterDb (0);
+            info.meterDb[1] = row->getMeterDb (1);
+            info.editorEnabled = row->isEditorEnabled();
+            info.duplicateEnabled = row->isDuplicateEnabled();
         }
     }
 
@@ -733,38 +913,10 @@ void InstancePanel::timerCallback()
     const auto now = juce::Time::getMillisecondCounterHiRes();
 
     for (auto* row : rowList->rows)
-        row->updateLed (router.getActivityCount (row->getId()), now);
+        row->tick (graph.findInstance (row->getId()), router.getActivityCount (row->getId()), now);
 }
 
 //==============================================================================
-void InstancePanel::showAddMenu()
-{
-    const auto types = plugins.getKnownPluginList().getTypes();
-
-    if (types.isEmpty())
-    {
-        setStatus (juce::String::fromUTF8 ("No hay plugins conocidos: escaneá en Archivo > Plugins…"), true);
-        return;
-    }
-
-    juce::PopupMenu menu;
-    juce::KnownPluginList::addToMenu (menu, types, juce::KnownPluginList::sortByManufacturer);
-
-    juce::Component::SafePointer<InstancePanel> safeThis (this);
-
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addButton),
-                        [safeThis, types] (int result)
-                        {
-                            if (safeThis == nullptr || result == 0)
-                                return;
-
-                            const auto index = juce::KnownPluginList::getIndexChosenByMenu (types, result);
-
-                            if (juce::isPositiveAndBelow (index, types.size()))
-                                safeThis->addInstance (types.getReference (index));
-                        });
-}
-
 void InstancePanel::updateRows()
 {
     const auto& instances = graph.getInstances();
@@ -801,45 +953,57 @@ void InstancePanel::updateRows()
         rows[(int) i]->refreshMidi (router);
     }
 
-    rowList->setSize (viewport.getMaximumVisibleWidth(), juce::jmax (kRowHeight, rows.size() * kRowHeight));
+    const auto contentHeight = rows.isEmpty() ? viewport.getMaximumVisibleHeight()
+                                              : rows.size() * (kRowHeight + kRowGap) - kRowGap;
+    rowList->setSize (viewport.getMaximumVisibleWidth(), juce::jmax (kRowHeight, contentHeight));
     rowList->resized();
     rowList->repaint();
 
-    const auto* selected = graph.findInstance (selectedId);
-    keyboardLabel.setText (selected != nullptr
-                               ? juce::String::fromUTF8 ("Teclado virtual (canal 1) → ") + selected->name
-                               : juce::String::fromUTF8 ("Teclado virtual: elegí una instancia (clic en su fila)"),
-                           juce::dontSendNotification);
+    const auto numLoading = graph.getNumLoading();
+    titleLabel.setText ("Instancias (" + juce::String ((int) instances.size()) + ")"
+                            + (numLoading > 0 ? juce::String::fromUTF8 ("  —  cargando ") + juce::String (numLoading) + juce::String::fromUTF8 ("…")
+                                              : juce::String()),
+                        juce::dontSendNotification);
+    updateKeyboardHeader();
 }
 
 void InstancePanel::setStatus (const juce::String& text, bool isError)
 {
-    statusLabel.setText (text, juce::dontSendNotification);
-    statusLabel.setColour (juce::Label::textColourId, isError ? juce::Colours::orangered : juce::Colours::lightgreen);
+    if (onStatus)
+        onStatus (text, isError);
 }
 
 void InstancePanel::paint (juce::Graphics& g)
 {
-    g.setColour (juce::Colours::white.withAlpha (0.08f));
-    g.drawHorizontalLine (0, 0.0f, (float) getWidth());
+    g.fillAll (theme::background);
+
+    // Keyboard header strip.
+    auto area = getLocalBounds();
+    auto keyboardArea = area.removeFromBottom (kKeyboardHeaderHeight + (keyboardVisible ? kKeyboardHeight : 0));
+    g.setColour (theme::bar);
+    g.fillRect (keyboardArea.removeFromTop (kKeyboardHeaderHeight));
+    g.setColour (theme::outline);
+    g.drawHorizontalLine (getHeight() - (kKeyboardHeaderHeight + (keyboardVisible ? kKeyboardHeight : 0)), 0.0f, (float) getWidth());
 }
 
 void InstancePanel::resized()
 {
     auto area = getLocalBounds();
-    area.removeFromTop (8);
 
-    auto top = area.removeFromTop (30);
-    addButton.setBounds (top.removeFromLeft (170));
-    top.removeFromLeft (8);
-    panicButton.setBounds (top.removeFromLeft (100));
-    top.removeFromLeft (12);
-    statusLabel.setBounds (top);
+    auto keyboardArea = area.removeFromBottom (kKeyboardHeaderHeight + (keyboardVisible ? kKeyboardHeight : 0));
+    auto keyboardHeader = keyboardArea.removeFromTop (kKeyboardHeaderHeight).reduced (8, 3);
+    keyboardToggle.setBounds (keyboardHeader.removeFromLeft (92));
+    keyboardHeader.removeFromLeft (8);
+    keyboardLabel.setBounds (keyboardHeader);
+    keyboard.setBounds (keyboardArea);
 
-    area.removeFromTop (6);
-    keyboard.setBounds (area.removeFromBottom (kKeyboardHeight));
-    keyboardLabel.setBounds (area.removeFromBottom (22));
-    area.removeFromBottom (4);
+    area.reduce (8, 0);
+    auto header = area.removeFromTop (kHeaderHeight).reduced (0, 4);
+    addButton.setBounds (header.removeFromRight (190));
+    header.removeFromRight (8);
+    titleLabel.setBounds (header);
+
+    area.removeFromBottom (6);
     viewport.setBounds (area);
 
     updateRows();

@@ -7,14 +7,13 @@ namespace vstplayer
 
 class AppSettings;
 class GainProcessor;
-class ToneGeneratorProcessor;
 
 // Owns the audio device and the processing graph.
 // Device: WASAPI ("Windows Audio"), 48 kHz / 256 samples by default; the device setup is
 // persisted in settings.xml (AudioDeviceManager::createStateXml) and restored on start.
-// Graph: AudioProcessorPlayer -> AudioProcessorGraph. Every source (plugin instances via their
-// gain node, and until stage 6 the test tone) feeds the stereo output mixer (a GainProcessor at
-// 0 dB with a peak meter), which feeds the audio output node. The player re-prepares the graph whenever the device restarts,
+// Graph: AudioProcessorPlayer -> AudioProcessorGraph. Every plugin instance (through its gain
+// node) feeds the stereo output mixer (a GainProcessor at 0 dB with a peak meter), which feeds
+// the audio output node. (The stage 2 test tone was removed in stage 6.) The player re-prepares the graph whenever the device restarts,
 // so sample rate / buffer size changes reach every node through prepareToPlay.
 class AudioEngine final : private juce::ChangeListener
 {
@@ -39,9 +38,8 @@ public:
     // One-line human readable summary (Spanish, for the UI).
     juce::String describeDevice() const;
 
-    void setTestToneEnabled (bool shouldBeEnabled);
-    bool isTestToneEnabled() const;
-    ToneGeneratorProcessor* getToneGenerator() const;
+    // Audio callback load, 0..1 (AudioDeviceManager::getCpuUsage).
+    double getCpuUsage() const { return deviceManager.getCpuUsage(); }
 
     // Output mixer: connect stereo sources to its channels 0 and 1.
     juce::AudioProcessorGraph::NodeID getMixerNodeId() const noexcept { return mixerNode->nodeID; }
@@ -74,7 +72,6 @@ private:
 
     juce::AudioProcessorGraph::Node::Ptr outputNode;
     juce::AudioProcessorGraph::Node::Ptr mixerNode;
-    juce::AudioProcessorGraph::Node::Ptr toneNode;
 
     bool callbackAttached = false;
 

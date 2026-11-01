@@ -10,6 +10,8 @@
 #include "engine/MidiRouter.h"
 #include "engine/PluginManager.h"
 #include "project/ProjectController.h"
+#include "ui/InstancePanel.h"
+#include "ui/Theme.h"
 
 namespace vstplayer
 {
@@ -27,7 +29,7 @@ public:
     {
         const auto args = getCommandLineParameterArray();
         return cli::detectMode (args) != cli::Mode::gui || args.contains (kInstanceSelfTestFlag)
-               || args.contains (kMidiSelfTestFlag) || args.contains (kProjectSelfTestFlag);
+               || args.contains (kMidiSelfTestFlag) || args.contains (kProjectSelfTestFlag) || args.contains (kUiSelfTestFlag);
     }
 
     void initialise (const juce::String&) override
@@ -50,7 +52,11 @@ public:
         // The self-test changes the audio device temporarily: never persist that (nor the
         // window state).
         isSelfTest = args.contains (kInstanceSelfTestFlag) || args.contains (kMidiSelfTestFlag)
-                     || args.contains (kProjectSelfTestFlag);
+                     || args.contains (kProjectSelfTestFlag) || args.contains (kUiSelfTestFlag);
+
+        // Dark theme for every window (main window, dialogs, plugin list, MIDI ports).
+        lookAndFeel = std::make_unique<DarkLookAndFeel>();
+        juce::LookAndFeel::setDefaultLookAndFeel (lookAndFeel.get());
 
         plugins = std::make_unique<PluginManager> (*settings);
         audioEngine = std::make_unique<AudioEngine> (*settings, ! isSelfTest);
@@ -69,6 +75,14 @@ public:
 
         mainWindow = std::make_unique<MainWindow> (getApplicationName(), *settings, *audioEngine, *plugins, *instanceGraph,
                                                    *midiRouter, *projectController);
+
+        if (! isSelfTest)
+        {
+            // Virtual keyboard folded or not, as the user left it.
+            auto& panel = mainWindow->getInstancePanel();
+            panel.setKeyboardVisible (settings->getProperties().getBoolValue (kKeyboardVisibleKey, true));
+            panel.onKeyboardVisibilityChanged = [this] (bool visible) { settings->getProperties().setValue (kKeyboardVisibleKey, visible); };
+        }
 
         if (isSelfTest)
         {
@@ -107,13 +121,14 @@ public:
         {
             const auto pluginIndex = args.indexOf ("--plugin");
             const auto singlePlugin = pluginIndex >= 0 && pluginIndex + 1 < args.size() ? args[pluginIndex + 1].unquoted() : juce::String();
-            const auto kind = args.contains (kProjectSelfTestFlag) ? InstanceSelfTest::Kind::project
+            const auto kind = args.contains (kUiSelfTestFlag)       ? InstanceSelfTest::Kind::ui
+                              : args.contains (kProjectSelfTestFlag) ? InstanceSelfTest::Kind::project
                               : args.contains (kMidiSelfTestFlag)   ? InstanceSelfTest::Kind::midi
                                                                      : InstanceSelfTest::Kind::instances;
             selfTest = std::make_unique<InstanceSelfTest> (*mainWindow, *audioEngine, *plugins, *instanceGraph, *midiRouter,
                                                            kind, singlePlugin);
 
-            if (kind == InstanceSelfTest::Kind::project)
+            if (kind == InstanceSelfTest::Kind::project || kind == InstanceSelfTest::Kind::ui)
                 selfTest->setProjectTest (*projectController, valueOf (args, kProjectSelfTestFlag),
                                           juce::File::getCurrentWorkingDirectory().getChildFile (valueOf (args, "--project-test-dir")),
                                           findProjectArgument (args));
@@ -133,6 +148,8 @@ public:
         // MIDI router (stops writing to the instances), then the instances, then the audio
         // engine that owns the graph.
         mainWindow = nullptr;
+        juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
+        lookAndFeel = nullptr;
         projectController = nullptr;
         midiRouter = nullptr;
         instanceGraph = nullptr;
@@ -248,6 +265,7 @@ private:
     }
 
     std::unique_ptr<AppSettings> settings;
+    std::unique_ptr<DarkLookAndFeel> lookAndFeel;
     std::unique_ptr<PluginManager> plugins;
     std::unique_ptr<AudioEngine> audioEngine;
     std::unique_ptr<InstanceGraph> instanceGraph;
@@ -260,6 +278,8 @@ private:
     static constexpr const char* kInstanceSelfTestFlag = "--instance-selftest";
     static constexpr const char* kMidiSelfTestFlag = "--midi-selftest";
     static constexpr const char* kProjectSelfTestFlag = "--project-selftest";
+    static constexpr const char* kUiSelfTestFlag = "--ui-selftest";
+    static constexpr const char* kKeyboardVisibleKey = "keyboardVisible";
 };
 
 } // namespace vstplayer

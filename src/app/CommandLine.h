@@ -16,10 +16,12 @@ class AppSettings;
 //   VstPlayer.exe --scan-one <file> <out.xml>
 //                                        internal: child process of the out-of-process scanner.
 //   VstPlayer.exe --audio-selftest [--type "<device type>"]
-//                                        open the audio device, run the test tone at a very low
-//                                        level (-40 dBFS), switch the buffer to 128 (or the
-//                                        closest size the device offers) and check that the graph
-//                                        is re-prepared. Does not modify settings.xml.
+//                                        open the audio device with the saved setup and run the
+//                                        (silent) graph: blocks processed per second, prepareToPlay
+//                                        arguments of the output mixer, CPU; then switch the buffer
+//                                        to 128 (or the closest size the device offers) and check that
+//                                        the graph is re-prepared. No sound since stage 6 (the test
+//                                        tone was removed). Does not modify settings.xml.
 //   VstPlayer.exe --audio-devices        list audio device types, default output device,
 //                                        sample rates and buffer sizes.
 //   VstPlayer.exe --midi-ports           list MIDI input and output ports.

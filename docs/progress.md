@@ -649,3 +649,156 @@ cambiados `CMakeLists.txt`, `src/Main.cpp`, `src/app/MainWindow.{h,cpp}`, `src/a
   la etapa 6.
 - Observación lateral: `plugins.xml` se reescribe (mismo contenido) en cada salida de la app, también en
   los self-tests (comportamiento de `PluginManager` desde la etapa 2).
+
+## Etapa 6 — Interfaz definitiva  (2026-11-01)
+**Hecho:**
+- **Layout** (`src/ui/MainContent.{h,cpp}`, reescrito):
+  - Barra superior, línea 1: nombre del proyecto (con `*`; ruta en el tooltip), botones **Nuevo, Abrir…,
+    Recientes ▾** (popup con la lista de `recent.json` + "Limpiar la lista"), **Guardar, Guardar como…** y
+    **PÁNICO** (rojo). Línea 2: dispositivo de audio (botón: abre la configuración de audio; el nombre se
+    acorta con "…" si no entra, tipo + nombre completo en el tooltip), sample rate · buffer · latencia,
+    **CPU %** (`AudioDeviceManager::getCpuUsage`, ~4 veces por segundo, naranja > 50 %, rojo > 80 %),
+    vúmetro estéreo de la mezcla, **Puertos MIDI…** y **Plugins…**.
+  - Centro (`src/ui/InstancePanel.{h,cpp}`, reescrito sobre la base de las etapas 3–5): encabezado
+    "Instancias (N)" + "+ Agregar instancia…", lista desplazable de filas, **teclado virtual plegable**
+    (botón "▾/▸ Teclado" con la instancia destino; el estado plegado se guarda en `settings.xml`, clave
+    `keyboardVisible`, salvo en los self-tests).
+  - Barra de estado: último mensaje (errores en rojo: carga fallida, error de audio, no se pudo abrir/guardar;
+    "Guardado: …", "Abierto: …", "X cargado (N ms)", "Pánico…"), **indicador de progreso** (barra animada +
+    "Cargando N plugins…" / "Escaneando plugins…") y recordatorio de atajos.
+- **Fila de instancia** (2 líneas, 64 px): nombre editable (doble clic), plugin — fabricante (o "cargando…" /
+  "ERROR" / "FALTA" en rojo, con la fila en rojo), **vúmetro estéreo** de la salida de la instancia (pico por
+  canal medido en su `GainProcessor`, un `std::atomic<float>` por canal con retención hasta que la UI lo lee,
+  escala −60…+6 dBFS, caída ~45 dB/s), slider de ganancia en dB, **M** (mute), **Editor**, **Duplicar**,
+  **Quitar**; línea 2: LED MIDI, puerto, "Canales: …" (call-out con 16 toggles), keep / remapear. Mientras
+  carga muestra una barra de progreso animada en lugar del vúmetro.
+- **Duplicar** (`InstanceGraph::duplicateInstance` + `InstancePanel::duplicateInstance`): nueva instancia del
+  mismo plugin con el `getStateInformation` del original aplicado antes de entrar al grafo, misma ganancia y
+  mute, nombre "X (copia)" y las mismas rutas MIDI.
+- **Agregar instancia** (`src/ui/AddInstanceDialog.{h,cpp}`): ventana no modal con búsqueda (nombre,
+  fabricante, categoría; varias palabras = todas), "Sólo instrumentos" (activo por defecto), lista agrupada por
+  fabricante (encabezados no seleccionables), versión e instrumento/efecto por fila, contador "N de M plugins",
+  "Plugins…" para escanear; doble clic / Enter / "Agregar" agrega y cierra; Esc / "Cancelar" cierra. Se
+  actualiza sola si la lista de plugins cambia (escaneo con el diálogo abierto).
+- **Look and feel** (`src/ui/Theme.{h,cpp}`): `DarkLookAndFeel` (LookAndFeel_V4 con esquema oscuro propio,
+  tipografía por defecto, botones planos, sin iconos externos), instalado como look and feel por defecto en
+  `Main.cpp` (lo usan también el diálogo de audio, la lista de plugins y "Puertos MIDI").
+- **Atajos** con `ApplicationCommandManager` (se muestran en los menús): **Ctrl+N, Ctrl+O, Ctrl+S,
+  Ctrl+Shift+S, Esc = pánico** (también Audio → Pánico en el menú). Escuchan a nivel de ventana, así que
+  funcionan con el foco en cualquier control de la ventana principal; Esc mientras se renombra cancela la
+  edición (lo consume el editor de texto).
+- **Carga de plugins sin congelar la UI** (`InstanceGraph`): JUCE crea los VST3 en el hilo de mensajes
+  (incluso con `createPluginInstanceAsync`), así que ahora las creaciones van a una **cola**: una por vez,
+  cada una 50 ms después de la anterior (la UI pinta la fila "cargando", cierra el diálogo y procesa eventos
+  entre una y otra), y antes de cada una el **DLL del plugin se carga en un hilo de fondo** (`LoadLibraryEx`:
+  la carga del binario y su inicialización estática no ocurren en el hilo de mensajes; JUCE después lo
+  encuentra ya cargado). La creación es sincrónica dentro de su turno para poder medirla
+  (`getLastCreationMs`, `getMaxCreationMs`, `getLastPreloadMs`).
+  El escaneo ya corría en hilos de fondo con procesos hijos (etapa 2); ahora además la barra de estado muestra
+  "Escaneando plugins…" mientras dura (`PluginListWindow::isScanning`).
+- **Generador de tono quitado**: borrado `src/engine/ToneGenerator.h`, su nodo y la API de `AudioEngine`, y el
+  botón de la UI provisoria. `--audio-selftest` **se conserva** pero ahora es silencioso: mide sobre el nodo de
+  mezcla (siempre presente) los bloques procesados por segundo, los argumentos de `prepareToPlay`, el tamaño de
+  bloque y la CPU, y sigue verificando que cambiar el buffer re-prepara el grafo. Ya no verifica un pico de
+  señal (no hay fuente); el sonido real lo cubren los self-tests con plugins. `GainProcessor` ganó
+  `getAndResetMeterPeak(ch)`, `getPrepareCount()` y `getLastBlockSize()`.
+- `MainWindow`: botones de la barra conectados a las mismas acciones que el menú, menú "Recientes" reutilizado
+  por el botón, mensajes también en la barra de estado, `fileChooserOverride` (los self-tests reemplazan el
+  diálogo nativo de archivos), tamaño mínimo 860x540 (lógicos, sin el marco).
+- **Self-test nuevo `--ui-selftest`** (`src/app/UiSelfTest.cpp`) y **`tools/run-ui-test.ps1`** (carpeta temporal
+  con `--project-test-dir` y `--project-data-dir`; capturas copiadas a `build\ui-test\` o `build-debug\ui-test\`;
+  verifica que `plugins.xml` quede idéntico y que no queden `recent.json` / autoguardado en `%APPDATA%`).
+  80 pasos, sin diálogos ni intervención:
+  - **Layout por programa**: recorre todos los componentes visibles de la ventana y falla si un hijo se sale
+    de su padre, si dos hermanos visibles se superponen, si un control mide menos de 24x18 o si el texto de un
+    botón no entra sin comprimirse (misma cuenta que `LookAndFeel_V2::drawButtonText`). Se corre a 1024x600
+    (vacía, con 3 instancias, con el teclado plegado), 1600x1000, en el mínimo y con
+    `Desktop::setGlobalScaleFactor (1.5)`.
+  - **Capturas** con `PrintWindow` (lo que dibuja Windows, en píxeles físicos) de la ventana y del diálogo.
+  - Diálogo de agregar: filtro de instrumentos, agrupado y ordenado, búsqueda por nombre y por fabricante, Esc
+    (con el foco real en el cuadro de búsqueda); agrega Surge XT, sforzando y Dexed por el diálogo.
+  - **Responsividad**: un timer de 5 ms en el hilo de mensajes mide el hueco máximo durante cada carga, la
+    carga de dos plugins a la vez, la apertura de un proyecto de 4 plugins y un escaneo real.
+  - Duplicar (estado byte a byte, programa, ganancia, rutas), vúmetros (instancia, copia en silencio, mezcla),
+    CPU y audio en la barra, indicador de progreso al abrir un proyecto.
+  - Atajos enviados como pulsaciones a la ventana (`ComponentPeer::handleKeyPress`, el mismo camino que una
+    tecla real: van al componente con foco y suben por los padres): Esc con el foco en el teclado virtual y en un
+    combo; Esc además como **entrada real del sistema con `SendInput`** (la ventana estaba en primer plano);
+    Ctrl+S sin archivo (Guardar como), Ctrl+S con cambios (mismo archivo), Ctrl+N, Ctrl+O (reabre el proyecto).
+  - Escaneo desde la UI: vacía la `KnownPluginList`, re-escanea los mismos 7 archivos (procesos hijos) con la
+    ventana de plugins y al final restaura el XML original exacto.
+- Self-tests anteriores: no hizo falta cambiarlos (la API pública de `InstancePanel` se mantuvo);
+  `--ui-selftest` agrega `Kind::ui` a `InstanceSelfTest`.
+
+**Archivos:** nuevos `src/ui/Theme.{h,cpp}`, `src/ui/LevelMeter.h`, `src/ui/AddInstanceDialog.{h,cpp}`,
+`src/app/UiSelfTest.cpp`, `tools/run-ui-test.ps1`; reescritos `src/ui/MainContent.{h,cpp}`,
+`src/ui/InstancePanel.{h,cpp}`; cambiados `CMakeLists.txt`, `src/Main.cpp`, `src/app/MainWindow.{h,cpp}`,
+`src/app/CommandLine.{h,cpp}`, `src/app/InstanceSelfTest.{h,cpp}`, `src/engine/AudioEngine.{h,cpp}`,
+`src/engine/GainProcessor.h`, `src/engine/InstanceGraph.{h,cpp}`, `src/ui/PluginListWindow.{h,cpp}`,
+`docs/progress.md`; borrado `src/engine/ToneGenerator.h`.
+
+**Verificación:**
+- `pwsh -NoProfile -File .\tools\build.ps1` y `-Config Debug` → OK, sin warnings en nuestro código.
+- `pwsh -NoProfile -File .\tools\run-ui-test.ps1` (Release) → **PRUEBA DE UI: OK**, 80 pasos, 97 comprobaciones,
+  14 s, 0 aserciones. `-Config Debug -AllowedLeaks VST3HostContextHeadless,AsyncUpdater` → OK, **0 aserciones**,
+  sólo la fuga conocida de sforzando (etapa 3). `plugins.xml` idéntico (hash) después de las dos corridas.
+  - Pantalla principal de esta máquina: 1638x1024 lógicos a escala **1.25** (2048x1280 físicos); la ventana de
+    1024x600 lógicos mide 1280x750 px físicos. **0 problemas de layout** a 1024x600 (vacía, 3 y 4 instancias,
+    teclado plegado), 1600x1000, mínimo 860x540 y 1024x600 con escala global 1.5 (1911x1102 px físicos).
+  - Capturas revisadas a ojo (`build\ui-test\*.png`): 01 vacía, 02 diálogo agregar, 03 tres instancias,
+    04 vúmetro de Dexed encendido + copia, 05 teclado plegado, 06 1600x1000, 07 mínimo (4 filas con scroll),
+    08 escala 1.5 (todo proporcional, texto nítido). Nada cortado ni superpuesto; en el mínimo el texto del
+    plugin se abrevia con "…".
+  - **Hilo de mensajes durante cargas** (Release; Debug entre paréntesis): Surge XT: DLL precargada en otro
+    hilo en 32 ms, creación en el hilo de mensajes **~320 ms** (411), hueco máximo = la creación; sforzando
+    **~90 ms** (203); Dexed **~16 ms** (92). Entre "Agregar" y el comienzo de la creación la UI corrió 20–50 ms
+    (≥ 2 ticks: fila "cargando" visible y diálogo cerrado). Dos cargas a la vez: hueco máximo 51 ms (la UI corre
+    entre una y otra). Abrir el proyecto de 4 plugins: hueco máximo 360 ms = la creación de Surge XT; el
+    indicador "Cargando 3 plugins…" y las barras de las filas se vieron durante la carga.
+  - **Escaneo** de 7 archivos desde la UI: hueco máximo 27 ms (Debug 161 ms), 231 ticks del timer de 5 ms,
+    "Escaneando plugins…" en la barra de estado, mismos 7 plugins.
+  - Duplicar: estado de Dexed idéntico (8284 bytes), programa 5, −30 dB, rutas "loopMIDI Port / Canales: 1, 3 /
+    Remapear → canal 2". Vúmetro: Dexed L/R −41.4 dB con una nota (ganancia −30 dB), copia −60 (silencio),
+    mezcla −41.4 dB.
+  - Atajos: Esc → "Pánico…" y la tecla del teclado virtual se suelta (foco en el teclado y en un combo); Esc por
+    `SendInput` → pánico; Ctrl+S → `ui-prueba.vstproj.json` escrito, título sin `*`; cambio → `*` → Ctrl+S
+    reescribe el mismo archivo; Ctrl+N → vacío; Ctrl+O → reabre las 4 instancias.
+- Tests anteriores (Release y Debug): `ctest --test-dir build` y `--test-dir build-debug` → 100 % (1/1);
+  `run-gui-test.ps1` (`--instance-selftest`) Release OK, Debug OK (fuga conocida); `-AppArgs '--midi-selftest'`
+  Release OK (49.7 s) y Debug OK, 0 fugas; `run-project-test.ps1` Release OK y Debug OK (fuga conocida).
+- `--audio-selftest` (sin tono): WASAPI 48000/480, 47 754 muestras/s, grafo preparado con 480 → OK (cambio de
+  buffer omitido: WASAPI compartido sólo ofrece 480); `--type DirectSound`: 256 → 128, grafo re-preparado con
+  128 → OK (aviso de ritmo irregular de DirectSound, como en la etapa 2). Debug → OK.
+- GUI normal (sin self-test) Release y Debug con `--debug-to-stdout`: abre "VstPlayer — Sin título",
+  `CloseMainWindow()` → exit 0, 0 líneas de debug.
+- `%APPDATA%\VstPlayer` al final: `plugin-scan.log`, `plugins.xml` (mismo contenido), `settings.xml` (restaurado
+  del respaldo tras la prueba de GUI normal). El escaneo de JUCE deja un `plugin-scan-in-progress.txt` vacío;
+  `run-ui-test.ps1` lo borra si no existía antes. Sin `recent.json` ni autoguardado.
+
+**Pendiente / problemas:**
+- **La creación de un VST3 sigue bloqueando el hilo de mensajes lo que tarde el plugin** (Surge XT ~0.3 s,
+  ~0.4–0.5 s en Debug o al abrir un proyecto; sforzando ~0.1 s; Dexed ~20 ms). Es una restricción de VST3 /
+  JUCE (el componente se crea en el hilo de la UI). Lo que se hizo: DLL en otro hilo, una creación por vez con
+  pausas para que la UI pinte y responda, filas e indicador de progreso visibles antes de cada bloqueo. Hostear
+  plugins en otro proceso queda fuera de alcance. Restaurar un estado grande (`setStateInformation`) también
+  ocurre en ese turno.
+- La precarga del DLL ejecuta su `DllMain` / inicialización estática en un hilo de fondo; con los 7 plugins
+  instalados no hubo problemas, pero un plugin que asuma el hilo de la UI en su inicialización estática podría
+  fallar (habría que agregar una lista de exclusión).
+- "Escala con DPI de Windows": verificado a 125 % (la escala real de esta pantalla) y simulando 150 % con
+  `setGlobalScaleFactor`; no se probó cambiar la escala de Windows en caliente ni mover la ventana al segundo
+  monitor (100 %) por programa.
+- **Verificación manual pendiente (usuario)**, con `build\VstPlayer_artefacts\Release\VstPlayer.exe`:
+  1. Mirar la ventana: tema oscuro, barra superior con proyecto/botones/PÁNICO y audio/CPU/vúmetro, lista,
+     teclado abajo, barra de estado. Pasar el mouse por los botones (tooltips).
+  2. "+ Agregar instancia…": escribir "surge" (sólo Surge XT), destildar "Sólo instrumentos" (aparece Surge XT
+     Effects), Enter o doble clic agrega. Agregar Dexed y sforzando también. Mientras Surge carga, la ventana
+     puede quedar quieta ~0.3 s (ver arriba); el resto del tiempo responde.
+  3. Clic en una fila y tocar el teclado virtual: el vúmetro de la fila y el de la mezcla se mueven.
+     "Duplicar" en Dexed: aparece "Dexed (copia)" con el mismo sonido. Probar "M", el slider, "Editor", "Quitar".
+  4. Plegar / desplegar el teclado ("▾ Teclado"); cerrar y reabrir la app: queda como se dejó.
+  5. Esc con una nota colgada (o desde carrilion) → corta todo. Ctrl+S / Ctrl+O / Ctrl+N y "Recientes ▾".
+  6. Achicar la ventana al mínimo y agrandarla: nada se superpone; con muchas instancias aparece el scroll.
+  7. Botón del dispositivo de audio → configuración de audio; "Puertos MIDI…"; "Plugins…" → Escanear: la barra
+     de estado dice "Escaneando plugins…" y la ventana sigue respondiendo.
+- `Translations.cpp` conserva la traducción de "Plays a test tone" (texto de JUCE, inofensivo).

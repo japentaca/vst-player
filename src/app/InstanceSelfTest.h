@@ -35,6 +35,12 @@ class ProjectController;
 // DirectSound 256 and 128. "--midi-selftest --restart-loopmidi" also terminates loopMIDI.exe
 // and starts it again (minimized) to check that a port deleted and re-created while in use
 // is picked up again by itself.
+// "--ui-selftest --project-test-dir <dir>" (stage 6, see UiSelfTest.cpp): the definitive UI.
+// Layout checks and screenshots (PNG in <dir>) at 1024x600, larger, at the minimum size and
+// with JUCE's global scale factor at 1.5; the "Agregar instancia" dialog (search, instruments
+// only, groups); message thread responsiveness while Surge XT / sforzando / Dexed load and while
+// a plugin scan runs; duplicate; level meters; CPU; keyboard fold; shortcuts (Esc, Ctrl+S,
+// Ctrl+N, Ctrl+O) sent as key presses to the window.
 // The audio setup is not persisted in this mode (see Main.cpp).
 class InstanceSelfTest final : private juce::Timer
 {
@@ -43,7 +49,8 @@ public:
     {
         instances, // --instance-selftest (stage 3)
         midi,      // --midi-selftest (stage 4)
-        project    // --project-selftest <phase> (stage 5, see ProjectSelfTest.cpp)
+        project,   // --project-selftest <phase> (stage 5, see ProjectSelfTest.cpp)
+        ui         // --ui-selftest (stage 6, see UiSelfTest.cpp)
     };
 
     InstanceSelfTest (MainWindow& window, AudioEngine& engine, PluginManager& plugins, InstanceGraph& graph,
@@ -70,6 +77,8 @@ private:
     void buildSinglePluginSteps();
     void buildMidiSteps(); // MidiSelfTest.cpp
     void buildProjectSteps(); // ProjectSelfTest.cpp
+    void buildUiSteps(); // UiSelfTest.cpp
+    static void clearUiTestState(); // UiSelfTest.cpp
     static void clearProjectTestState(); // ProjectSelfTest.cpp (its vars must go before JUCE's leak detector runs)
     void finish (bool ok);
 

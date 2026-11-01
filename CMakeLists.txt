@@ -29,6 +29,7 @@ target_sources(VstPlayer PRIVATE
     src/app/ProjectSelfTest.cpp
     src/app/ProcessTools.cpp
     src/app/Translations.cpp
+    src/app/UiSelfTest.cpp
     src/engine/AudioEngine.cpp
     src/engine/InstanceGraph.cpp
     src/engine/MidiRouter.cpp
@@ -37,11 +38,13 @@ target_sources(VstPlayer PRIVATE
     src/project/ProjectController.cpp
     src/project/ProjectSerializer.cpp
     src/project/RecentProjects.cpp
+    src/ui/AddInstanceDialog.cpp
     src/ui/InstancePanel.cpp
     src/ui/MainContent.cpp
     src/ui/MidiPortsWindow.cpp
     src/ui/PluginEditorWindow.cpp
-    src/ui/PluginListWindow.cpp)
+    src/ui/PluginListWindow.cpp
+    src/ui/Theme.cpp)
 
 target_include_directories(VstPlayer PRIVATE src)
 

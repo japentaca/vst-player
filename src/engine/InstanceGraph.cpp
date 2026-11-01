@@ -5,6 +5,14 @@
 #include "engine/MidiSourceProcessor.h"
 #include "engine/PluginManager.h"
 
+#ifndef NOMINMAX
+ #define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+ #define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
 namespace vstplayer
 {
 
@@ -23,6 +31,27 @@ namespace
 using Graph = juce::AudioProcessorGraph;
 constexpr double kFallbackSampleRate = 48000.0;
 constexpr int kFallbackBufferSize = 512;
+// Pause before each plugin creation so the UI can repaint and handle input in between.
+constexpr int kCreationGapMs = 50;
+
+// The binary of a VST3: the file itself, or <bundle>/Contents/x86_64-win/<name>.vst3.
+juce::File findVst3Binary (const juce::String& fileOrIdentifier)
+{
+    const juce::File file (fileOrIdentifier);
+
+    if (file.existsAsFile())
+        return file;
+
+    if (file.isDirectory())
+    {
+        const auto inner = file.getChildFile ("Contents").getChildFile ("x86_64-win").getChildFile (file.getFileName());
+
+        if (inner.existsAsFile())
+            return inner;
+    }
+
+    return {};
+}
 } // namespace
 
 InstanceGraph::InstanceGraph (AudioEngine& e, PluginManager& p)
@@ -32,6 +61,9 @@ InstanceGraph::InstanceGraph (AudioEngine& e, PluginManager& p)
 
 InstanceGraph::~InstanceGraph()
 {
+    creationQueue.clear();
+    preloadPool.removeAllJobs (false, 30000); // a preload in progress finishes; its result is dropped
+
     // Pending async loads hold only a weak reference: their plugin is discarded on arrival.
     for (auto& instance : instances)
         removeNodes (*instance);
@@ -77,22 +109,150 @@ InstanceId InstanceGraph::addInstance (const juce::PluginDescription& descriptio
     const auto id = createEntry (description, options).id;
     listeners.call ([] (Listener& l) { l.instanceListChanged(); });
 
+    creationQueue.push_back ({ id, description, std::move (options.prepare) });
+
+    if (! creationInProgress && creationQueue.size() == 1)
+        scheduleNextCreation (kCreationGapMs);
+
+    return id;
+}
+
+void InstanceGraph::scheduleNextCreation (int delayMs)
+{
+    if (creationQueue.empty())
+    {
+        creationInProgress = false;
+        return;
+    }
+
+    creationInProgress = true;
+    juce::WeakReference<InstanceGraph> weakThis (this);
+
+    juce::Timer::callAfterDelay (delayMs, [weakThis]
+    {
+        if (auto* self = weakThis.get())
+            self->startNextCreation();
+    });
+}
+
+void InstanceGraph::startNextCreation()
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
+    // Skip entries removed while they were waiting.
+    while (! creationQueue.empty() && findInstance (creationQueue.front().id) == nullptr)
+        creationQueue.pop_front();
+
+    if (creationQueue.empty())
+    {
+        creationInProgress = false;
+        return;
+    }
+
+    creationInProgress = true;
+    const auto binary = findVst3Binary (creationQueue.front().description.fileOrIdentifier);
+
+    if (binary == juce::File())
+    {
+        auto creation = std::move (creationQueue.front());
+        creationQueue.pop_front();
+        createNow (std::move (creation));
+        return;
+    }
+
+    // Load the DLL on a background thread first (its loading and static initialisation can be
+    // slow); the creation itself then runs on the message thread and finds it already loaded.
+    juce::WeakReference<InstanceGraph> weakThis (this);
+    const auto path = binary.getFullPathName();
+
+    preloadPool.addJob ([weakThis, path]
+    {
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        auto* module = ::LoadLibraryExW (path.toWideCharPointer(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        const auto elapsed = juce::Time::getMillisecondCounterHiRes() - t0;
+
+        juce::MessageManager::callAsync ([weakThis, module, elapsed]
+        {
+            if (auto* self = weakThis.get())
+            {
+                self->lastPreloadMs = elapsed;
+
+                if (! self->creationQueue.empty())
+                {
+                    auto creation = std::move (self->creationQueue.front());
+                    self->creationQueue.pop_front();
+
+                    if (self->findInstance (creation.id) != nullptr)
+                        self->createNow (std::move (creation));
+                    else
+                        self->scheduleNextCreation (0);
+                }
+                else
+                {
+                    self->creationInProgress = false;
+                }
+            }
+
+            // JUCE holds its own reference once the plugin exists.
+            if (module != nullptr)
+                ::FreeLibrary (module);
+        });
+    });
+}
+
+void InstanceGraph::createNow (PendingCreation creation)
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
     const auto sampleRate = engine.getSampleRate() > 0.0 ? engine.getSampleRate() : kFallbackSampleRate;
     const auto bufferSize = engine.getBufferSize() > 0 ? engine.getBufferSize() : kFallbackBufferSize;
 
-    juce::WeakReference<InstanceGraph> weakThis (this);
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    lastCreationStartMs = t0;
+    juce::String error;
+    // Synchronous on purpose: VST3 creation happens on the message thread anyway, and this way
+    // its duration is known. The queue spaces creations out (see the class comment).
+    auto plugin = plugins.getFormatManager().createPluginInstance (creation.description, sampleRate, bufferSize, error);
+    lastCreationMs = juce::Time::getMillisecondCounterHiRes() - t0; // listeners called below see this one
+    pluginCreated (creation.id, std::move (plugin), error, creation.prepare);
 
-    plugins.getFormatManager().createPluginInstanceAsync (
-        description, sampleRate, bufferSize,
-        [weakThis, id, prepare = std::move (options.prepare)] (std::unique_ptr<juce::AudioPluginInstance> plugin,
-                                                               const juce::String& error)
-        {
-            if (auto* self = weakThis.get())
-                self->pluginCreated (id, std::move (plugin), error, prepare);
-            // Otherwise the graph is gone and the plugin is destroyed here, on the message thread.
-        });
+    lastCreationMs = juce::Time::getMillisecondCounterHiRes() - t0;
+    maxCreationMs = juce::jmax (maxCreationMs, lastCreationMs);
 
-    return id;
+    if (creationQueue.empty())
+        creationInProgress = false;
+    else
+        scheduleNextCreation (kCreationGapMs);
+}
+
+InstanceId InstanceGraph::duplicateInstance (const InstanceId& sourceId)
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
+    auto* source = findInstance (sourceId);
+
+    if (source == nullptr || ! source->isReady())
+        return {};
+
+    auto* plugin = source->getPlugin();
+
+    if (plugin == nullptr)
+        return {};
+
+    auto state = std::make_shared<juce::MemoryBlock>();
+    plugin->getStateInformation (*state);
+
+    AddOptions options;
+    options.name = source->name + " (copia)";
+    options.gainDb = source->gainDb;
+    options.mute = source->mute;
+    options.prepare = [state] (juce::AudioPluginInstance& newPlugin)
+    {
+        if (state->getSize() > 0)
+            newPlugin.setStateInformation (state->getData(), (int) state->getSize());
+    };
+
+    return addInstance (source->description, std::move (options));
 }
 
 InstanceId InstanceGraph::addMissingInstance (const juce::PluginDescription& description, const AddOptions& options,

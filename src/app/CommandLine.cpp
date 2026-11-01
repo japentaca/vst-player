@@ -3,7 +3,7 @@
 #include "app/AppSettings.h"
 #include "engine/AudioEngine.h"
 #include "engine/PluginManager.h"
-#include "engine/ToneGenerator.h"
+#include "engine/GainProcessor.h"
 
 #ifndef NOMINMAX
  #define NOMINMAX
@@ -221,45 +221,43 @@ int runAudioSelfTest (const juce::StringArray& args, AppSettings& settings)
         return 1;
     }
 
-    auto* tone = engine.getToneGenerator();
+    // Since stage 6 there is no test tone: the graph runs silent and the output mixer node
+    // (always present) is the probe: blocks processed, prepareToPlay arguments, block size.
+    auto* mixer = engine.getMixer();
 
-    if (tone == nullptr)
+    if (mixer == nullptr)
     {
-        print ("ERROR: no hay nodo de tono");
+        print ("ERROR: no hay nodo de mezcla");
         return 1;
     }
-
-    // Very low level: the test must not blast the speakers.
-    tone->setLevel (0.01f);
-    engine.setTestToneEnabled (true);
 
     bool ok = true;
 
     const auto measure = [&] (const juce::String& label, int expectedBuffer)
     {
         juce::Thread::sleep (500); // let the device settle after (re)starting
-        const auto blocksBefore = tone->getBlocksProcessed();
+        const auto blocksBefore = mixer->getBlocksProcessed();
         const auto t0 = juce::Time::getMillisecondCounterHiRes();
         juce::Thread::sleep (2000);
-        const auto blocks = tone->getBlocksProcessed() - blocksBefore;
+        const auto blocks = mixer->getBlocksProcessed() - blocksBefore;
         const auto elapsedSeconds = (juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0;
 
         const auto bufferSize = engine.getBufferSize();
         const auto latency = engine.getOutputLatencySamples();
         const auto sampleRate = engine.getSampleRate();
         // Samples actually rendered per second: close to the sample rate if nothing drops out.
-        const auto effectiveRate = (double) blocks * tone->getLastBlockSize() / elapsedSeconds;
+        const auto effectiveRate = (double) blocks * mixer->getLastBlockSize() / elapsedSeconds;
 
         print (label + ": device sr=" + juce::String (sampleRate, 0) + " buffer=" + juce::String (bufferSize)
                + " latencia salida=" + juce::String (latency) + " muestras ("
                + juce::String (sampleRate > 0 ? 1000.0 * latency / sampleRate : 0.0, 2) + " ms)"
-               + " | grafo preparado: sr=" + juce::String (tone->getPreparedSampleRate(), 0)
-               + " bloque=" + juce::String (tone->getPreparedBlockSize())
-               + " (prepareToPlay x" + juce::String (tone->getPrepareCount()) + ")"
+               + " | grafo preparado: sr=" + juce::String (mixer->getPreparedSampleRate(), 0)
+               + " bloque=" + juce::String (mixer->getPreparedBlockSize())
+               + " (prepareToPlay x" + juce::String (mixer->getPrepareCount()) + ")"
                + " | bloques=" + juce::String (blocks) + " en " + juce::String (elapsedSeconds, 2) + " s"
                + " (" + juce::String (juce::roundToInt (effectiveRate)) + " muestras/s)"
-               + " ultimo bloque=" + juce::String (tone->getLastBlockSize())
-               + " pico=" + juce::String (tone->getLastPeak(), 4));
+               + " ultimo bloque=" + juce::String (mixer->getLastBlockSize())
+               + " CPU=" + juce::String (100.0 * engine.getCpuUsage(), 1) + " %");
 
         // Informational only: some drivers legitimately call back in bursts (DirectSound),
         // but a sustained rate far below the sample rate means audible dropouts.
@@ -268,9 +266,8 @@ int runAudioSelfTest (const juce::StringArray& args, AppSettings& settings)
                    + " muestras/s, distinto de " + juce::String (juce::roundToInt (sampleRate)));
 
         const auto stepOk = blocks > 0
-                            && tone->getLastPeak() > 0.0f
-                            && tone->getPreparedBlockSize() == bufferSize
-                            && juce::approximatelyEqual (tone->getPreparedSampleRate(), sampleRate)
+                            && mixer->getPreparedBlockSize() == bufferSize
+                            && juce::approximatelyEqual (mixer->getPreparedSampleRate(), sampleRate)
                             && (expectedBuffer <= 0 || bufferSize == expectedBuffer);
 
         print (label + (stepOk ? ": OK" : ": FALLO"));
@@ -294,7 +291,7 @@ int runAudioSelfTest (const juce::StringArray& args, AppSettings& settings)
     }
     else
     {
-        const auto preparesBefore = tone->getPrepareCount();
+        const auto preparesBefore = mixer->getPrepareCount();
         auto setup = dm.getAudioDeviceSetup();
         setup.bufferSize = target;
         const auto setupError = dm.setAudioDeviceSetup (setup, true);
@@ -307,14 +304,13 @@ int runAudioSelfTest (const juce::StringArray& args, AppSettings& settings)
 
         measure ("Buffer " + juce::String (target), target);
 
-        if (tone->getPrepareCount() <= preparesBefore)
+        if (mixer->getPrepareCount() <= preparesBefore)
         {
             print ("FALLO: el grafo no se re-preparo tras cambiar el buffer");
             ok = false;
         }
     }
 
-    engine.setTestToneEnabled (false);
     print (ok ? "RESULTADO: OK" : "RESULTADO: FALLO");
     return ok ? 0 : 1;
 }

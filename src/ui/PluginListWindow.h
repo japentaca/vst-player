@@ -23,6 +23,10 @@ public:
 
     // Same as pressing "Escanear" (opens the folder chooser, then scans).
     void startScan();
+    // Scans exactly these files, without the folder chooser (tests). Background threads, with
+    // JUCE's progress window.
+    void scanFiles (const juce::StringArray& files);
+    bool isScanning() const;
 
 private:
     class Content;

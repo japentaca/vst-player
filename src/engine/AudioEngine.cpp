@@ -2,7 +2,6 @@
 
 #include "app/AppSettings.h"
 #include "engine/GainProcessor.h"
-#include "engine/ToneGenerator.h"
 
 namespace vstplayer
 {
@@ -40,13 +39,9 @@ void AudioEngine::buildGraph()
 
     outputNode = graph.addNode (std::make_unique<IOProcessor> (IOProcessor::audioOutputNode));
     mixerNode = graph.addNode (std::make_unique<GainProcessor> ("Mezcla"));
-    toneNode = graph.addNode (std::make_unique<ToneGeneratorProcessor>());
 
     for (int ch = 0; ch < kNumOutputChannels; ++ch)
-    {
-        graph.addConnection ({ { toneNode->nodeID, ch }, { mixerNode->nodeID, ch } });
         graph.addConnection ({ { mixerNode->nodeID, ch }, { outputNode->nodeID, ch } });
-    }
 }
 
 juce::String AudioEngine::initialise()
@@ -219,25 +214,6 @@ juce::StringArray AudioEngine::applyDeviceSetup (const juce::String& typeName, c
     }
 
     return problems;
-}
-
-void AudioEngine::setTestToneEnabled (bool shouldBeEnabled)
-{
-    if (auto* tone = getToneGenerator())
-        tone->setEnabled (shouldBeEnabled);
-}
-
-bool AudioEngine::isTestToneEnabled() const
-{
-    if (auto* tone = getToneGenerator())
-        return tone->isEnabled();
-
-    return false;
-}
-
-ToneGeneratorProcessor* AudioEngine::getToneGenerator() const
-{
-    return toneNode != nullptr ? dynamic_cast<ToneGeneratorProcessor*> (toneNode->getProcessor()) : nullptr;
 }
 
 GainProcessor* AudioEngine::getMixer() const

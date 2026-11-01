@@ -19,8 +19,8 @@ namespace
 {
 constexpr int kDefaultWidth = 1024;
 constexpr int kDefaultHeight = 700;
-constexpr int kMinWidth = 640;
-constexpr int kMinHeight = 480;
+constexpr int kMinWidth = 860;
+constexpr int kMinHeight = 540;
 constexpr const char* kLastProjectFolderKey = "lastProjectFolder";
 } // namespace
 
@@ -42,7 +42,21 @@ MainWindow::MainWindow (const juce::String& title, AppSettings& s, AudioEngine& 
     auto content = std::make_unique<MainContent> (engine, plugins, instances, router);
     content->onShowAudioSettings = [this] { showAudioSettings(); };
     content->onShowPlugins = [this] { showPluginList(); };
+    content->onShowMidiPorts = [this] { showMidiPorts(); };
+    content->onNew = [this] { newProject(); };
+    content->onOpen = [this] { openProjectWithDialog(); };
+    content->onRecent = [this] { showRecentMenu(); };
+    content->onSave = [this] { saveProject(); };
+    content->onSaveAs = [this] { saveProjectAs(); };
+    content->isScanning = [this] { return pluginListWindow != nullptr && pluginListWindow->isScanning(); };
     setContentOwned (content.release(), true);
+
+    // Shortcuts: the key mappings listen at the window level, so they work wherever the focus is
+    // inside it (keys a focused component uses itself, e.g. Esc while renaming, stay there).
+    commandManager.registerAllCommandsForTarget (this);
+    commandManager.setFirstCommandTarget (this);
+    addKeyListener (commandManager.getKeyMappings());
+    setApplicationCommandManagerToWatch (&commandManager);
 
     setResizable (true, true);
     setResizeLimits (kMinWidth, kMinHeight, 10000, 10000);
@@ -66,6 +80,9 @@ MainWindow::MainWindow (const juce::String& title, AppSettings& s, AudioEngine& 
 
 MainWindow::~MainWindow()
 {
+    removeKeyListener (commandManager.getKeyMappings());
+    setApplicationCommandManagerToWatch (nullptr);
+    commandManager.setFirstCommandTarget (nullptr);
     project.removeChangeListener (this);
     project.openEditor = nullptr;
     project.syncEditorWindows = nullptr;
@@ -109,11 +126,15 @@ void MainWindow::updateTitle()
     setName (appName + juce::String::fromUTF8 (" — ") + project.getDisplayName());
 
     if (auto* content = dynamic_cast<MainContent*> (getContentComponent()))
-        content->setProjectInfo (getProjectInfoText());
+        content->setProjectInfo (project.getDisplayName(), project.hasFile() ? project.getProjectFile().getFullPathName() : juce::String(),
+                                 project.isLoading() ? project.describeProgress() : juce::String());
 }
 
 void MainWindow::showMessage (const juce::String& title, const juce::String& message, bool isError)
 {
+    if (auto* content = dynamic_cast<MainContent*> (getContentComponent()))
+        content->setStatus (title + ": " + message.replace ("\n", " "), isError);
+
     if (suppressDialogs)
     {
         if (onMessage)
@@ -211,10 +232,15 @@ void MainWindow::openProjectNow (const juce::File& file)
     const auto result = project.open (file);
 
     if (result.failed())
+    {
         showMessage ("No se pudo abrir el proyecto", result.getErrorMessage(), true);
-    else
-        if (rememberProjectFolder)
-            settings.getProperties().setValue (kLastProjectFolderKey, file.getParentDirectory().getFullPathName());
+        return;
+    }
+
+    getMainContent().setStatus ("Abierto: " + file.getFullPathName());
+
+    if (rememberProjectFolder)
+        settings.getProperties().setValue (kLastProjectFolderKey, file.getParentDirectory().getFullPathName());
 }
 
 void MainWindow::openProjectWithDialog()
@@ -230,15 +256,11 @@ void MainWindow::openProjectWithDialog()
                                ? juce::File (folder)
                                : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
 
-        self.fileChooser = std::make_unique<juce::FileChooser> ("Abrir proyecto", start, juce::String ("*") + project::kFileSuffix);
-        self.fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-                                       [safeThis] (const juce::FileChooser& chooser)
-                                       {
-                                           const auto file = chooser.getResult();
-
-                                           if (safeThis != nullptr && file != juce::File())
-                                               safeThis->openProjectNow (file);
-                                       });
+        self.chooseFile (false, start, [safeThis] (const juce::File& file)
+        {
+            if (safeThis != nullptr && file != juce::File())
+                safeThis->openProjectNow (file);
+        });
     });
 }
 
@@ -254,6 +276,8 @@ void MainWindow::saveProject (std::function<void (bool)> done)
 
     if (result.failed())
         showMessage ("No se pudo guardar el proyecto", result.getErrorMessage(), true);
+    else
+        getMainContent().setStatus ("Guardado: " + project.getProjectFile().getFullPathName());
 
     if (done)
         done (result.wasOk());
@@ -268,13 +292,8 @@ void MainWindow::saveProjectAs (std::function<void (bool)> done)
                                           : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory))
                                          .getChildFile (project.getProjectName() + project::kFileSuffix);
 
-    fileChooser = std::make_unique<juce::FileChooser> ("Guardar proyecto como", start, juce::String ("*") + project::kFileSuffix);
-    fileChooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
-                                  | juce::FileBrowserComponent::warnAboutOverwriting,
-                              [safeThis = juce::Component::SafePointer<MainWindow> (this), done] (const juce::FileChooser& chooser)
+    chooseFile (true, start, [safeThis = juce::Component::SafePointer<MainWindow> (this), done] (const juce::File& file)
                               {
-                                  const auto file = chooser.getResult();
-
                                   if (safeThis == nullptr || file == juce::File())
                                   {
                                       if (done)
@@ -287,9 +306,14 @@ void MainWindow::saveProjectAs (std::function<void (bool)> done)
 
                                   if (result.failed())
                                       safeThis->showMessage ("No se pudo guardar el proyecto", result.getErrorMessage(), true);
-                                  else if (safeThis->rememberProjectFolder)
-                                      safeThis->settings.getProperties().setValue (kLastProjectFolderKey,
-                                                                                   safeThis->project.getProjectFile().getParentDirectory().getFullPathName());
+                                  else
+                                  {
+                                      safeThis->getMainContent().setStatus ("Guardado: " + safeThis->project.getProjectFile().getFullPathName());
+
+                                      if (safeThis->rememberProjectFolder)
+                                          safeThis->settings.getProperties().setValue (
+                                              kLastProjectFolderKey, safeThis->project.getProjectFile().getParentDirectory().getFullPathName());
+                                  }
 
                                   if (done)
                                       done (result.wasOk());
@@ -303,7 +327,116 @@ void MainWindow::saveWindowState()
 
 InstancePanel& MainWindow::getInstancePanel()
 {
-    return dynamic_cast<MainContent&> (*getContentComponent()).getInstancePanel();
+    return getMainContent().getInstancePanel();
+}
+
+MainContent& MainWindow::getMainContent()
+{
+    return dynamic_cast<MainContent&> (*getContentComponent());
+}
+
+void MainWindow::chooseFile (bool forSave, const juce::File& start, std::function<void (const juce::File&)> chosen)
+{
+    if (fileChooserOverride)
+    {
+        // Self-tests: no native dialog. Answered asynchronously, like the real chooser.
+        const auto file = fileChooserOverride (forSave);
+        juce::MessageManager::callAsync ([chosen, file] { chosen (file); });
+        return;
+    }
+
+    fileChooser = std::make_unique<juce::FileChooser> (forSave ? "Guardar proyecto como" : "Abrir proyecto", start,
+                                                       juce::String ("*") + project::kFileSuffix);
+    const auto chooserFlags = forSave ? juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                                     | juce::FileBrowserComponent::warnAboutOverwriting
+                               : juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
+
+    fileChooser->launchAsync (chooserFlags, [chosen] (const juce::FileChooser& chooser) { chosen (chooser.getResult()); });
+}
+
+juce::PopupMenu MainWindow::buildRecentMenu()
+{
+    juce::PopupMenu recentMenu;
+    const auto& recent = project.getRecentProjects().getPaths();
+
+    for (int i = 0; i < recent.size(); ++i)
+        recentMenu.addItem (cmdRecentBase + i, juce::String (i + 1) + ". " + recent[i]);
+
+    if (recent.isEmpty())
+        recentMenu.addItem (cmdClearRecent, "(sin proyectos recientes)", false);
+    else
+    {
+        recentMenu.addSeparator();
+        recentMenu.addItem (cmdClearRecent, "Limpiar la lista");
+    }
+
+    return recentMenu;
+}
+
+void MainWindow::showRecentMenu()
+{
+    auto& button = getMainContent().getRecentButton();
+    buildRecentMenu().showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&button),
+                                     [safeThis = juce::Component::SafePointer<MainWindow> (this)] (int result)
+                                     {
+                                         if (safeThis != nullptr && result != 0)
+                                             safeThis->menuItemSelected (result, fileMenu);
+                                     });
+}
+
+//==============================================================================
+void MainWindow::getAllCommands (juce::Array<juce::CommandID>& commands)
+{
+    commands.addArray ({ cmdNew, cmdOpen, cmdSave, cmdSaveAs, cmdPanic });
+}
+
+void MainWindow::getCommandInfo (juce::CommandID commandID, juce::ApplicationCommandInfo& result)
+{
+    const auto ctrl = juce::ModifierKeys::commandModifier;
+
+    switch (commandID)
+    {
+        case cmdNew:
+            result.setInfo ("Nuevo", "Proyecto nuevo", "Archivo", 0);
+            result.addDefaultKeypress ('n', ctrl);
+            break;
+
+        case cmdOpen:
+            result.setInfo (juce::String::fromUTF8 ("Abrir…"), "Abrir un proyecto", "Archivo", 0);
+            result.addDefaultKeypress ('o', ctrl);
+            break;
+
+        case cmdSave:
+            result.setInfo ("Guardar", "Guardar el proyecto", "Archivo", 0);
+            result.addDefaultKeypress ('s', ctrl);
+            break;
+
+        case cmdSaveAs:
+            result.setInfo (juce::String::fromUTF8 ("Guardar como…"), "Guardar el proyecto con otro nombre", "Archivo", 0);
+            result.addDefaultKeypress ('s', ctrl | juce::ModifierKeys::shiftModifier);
+            break;
+
+        case cmdPanic:
+            result.setInfo (juce::String::fromUTF8 ("Pánico"), "All notes off + all sound off", "Audio", 0);
+            result.addDefaultKeypress (juce::KeyPress::escapeKey, juce::ModifierKeys::noModifiers);
+            break;
+
+        default:
+            break;
+    }
+}
+
+bool MainWindow::perform (const InvocationInfo& info)
+{
+    switch (info.commandID)
+    {
+        case cmdNew:    newProject(); return true;
+        case cmdOpen:   openProjectWithDialog(); return true;
+        case cmdSave:   saveProject(); return true;
+        case cmdSaveAs: saveProjectAs(); return true;
+        case cmdPanic:  getInstancePanel().panic(); return true;
+        default:        return false;
+    }
 }
 
 void MainWindow::setAudioError (const juce::String& message)
@@ -375,26 +508,11 @@ juce::PopupMenu MainWindow::getMenuForIndex (int topLevelMenuIndex, const juce::
     {
         case fileMenu:
         {
-            menu.addItem (cmdNew, "Nuevo");
-            menu.addItem (cmdOpen, juce::String::fromUTF8 ("Abrir…"));
-            menu.addItem (cmdSave, "Guardar");
-            menu.addItem (cmdSaveAs, juce::String::fromUTF8 ("Guardar como…"));
-
-            juce::PopupMenu recentMenu;
-            const auto& recent = project.getRecentProjects().getPaths();
-
-            for (int i = 0; i < recent.size(); ++i)
-                recentMenu.addItem (cmdRecentBase + i, juce::String (i + 1) + ". " + recent[i]);
-
-            if (recent.isEmpty())
-                recentMenu.addItem (cmdClearRecent, "(sin proyectos recientes)", false);
-            else
-            {
-                recentMenu.addSeparator();
-                recentMenu.addItem (cmdClearRecent, "Limpiar la lista");
-            }
-
-            menu.addSubMenu ("Recientes", recentMenu);
+            menu.addCommandItem (&commandManager, cmdNew);
+            menu.addCommandItem (&commandManager, cmdOpen);
+            menu.addCommandItem (&commandManager, cmdSave);
+            menu.addCommandItem (&commandManager, cmdSaveAs);
+            menu.addSubMenu ("Recientes", buildRecentMenu());
             menu.addSeparator();
             menu.addItem (cmdPlugins, juce::String::fromUTF8 ("Plugins…"));
             menu.addSeparator();
@@ -405,6 +523,8 @@ juce::PopupMenu MainWindow::getMenuForIndex (int topLevelMenuIndex, const juce::
         case audioMenu:
             menu.addItem (cmdAudioSettings, juce::String::fromUTF8 ("Configuración de audio…"));
             menu.addItem (cmdMidiPorts, juce::String::fromUTF8 ("Puertos MIDI…"));
+            menu.addSeparator();
+            menu.addCommandItem (&commandManager, cmdPanic);
             break;
 
         case helpMenu:
