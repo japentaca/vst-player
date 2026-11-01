@@ -2,11 +2,12 @@
 
 #include "engine/AudioEngine.h"
 #include "engine/PluginManager.h"
+#include "ui/InstancePanel.h"
 
 namespace vstplayer
 {
 
-MainContent::MainContent (AudioEngine& e, PluginManager& p)
+MainContent::MainContent (AudioEngine& e, PluginManager& p, InstanceGraph& instances)
     : engine (e), plugins (p)
 {
     titleLabel.setText ("Sin proyecto cargado", juce::dontSendNotification);
@@ -37,6 +38,9 @@ MainContent::MainContent (AudioEngine& e, PluginManager& p)
     pluginsButton.setButtonText (juce::String::fromUTF8 ("Plugins…"));
     pluginsButton.onClick = [this] { if (onShowPlugins) onShowPlugins(); };
     addAndMakeVisible (pluginsButton);
+
+    instancePanel = std::make_unique<InstancePanel> (instances, plugins);
+    addAndMakeVisible (*instancePanel);
 
     engine.getDeviceManager().addChangeListener (this);
     plugins.getKnownPluginList().addChangeListener (this);
@@ -73,6 +77,9 @@ void MainContent::resized()
     audioButton.setBounds (buttons.removeFromLeft (200));
     buttons.removeFromLeft (8);
     pluginsButton.setBounds (buttons.removeFromLeft (140));
+
+    area.removeFromTop (12);
+    instancePanel->setBounds (area);
 }
 
 void MainContent::setAudioError (const juce::String& message)

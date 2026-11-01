@@ -24,10 +24,14 @@ target_sources(VstPlayer PRIVATE
     src/app/MainWindow.cpp
     src/app/AppSettings.cpp
     src/app/CommandLine.cpp
+    src/app/InstanceSelfTest.cpp
     src/app/Translations.cpp
     src/engine/AudioEngine.cpp
+    src/engine/InstanceGraph.cpp
     src/engine/PluginManager.cpp
+    src/ui/InstancePanel.cpp
     src/ui/MainContent.cpp
+    src/ui/PluginEditorWindow.cpp
     src/ui/PluginListWindow.cpp)
 
 target_include_directories(VstPlayer PRIVATE src)

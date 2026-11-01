@@ -3,6 +3,7 @@
 #include "app/AppSettings.h"
 #include "engine/AudioEngine.h"
 #include "engine/PluginManager.h"
+#include "ui/InstancePanel.h"
 #include "ui/MainContent.h"
 #include "ui/PluginListWindow.h"
 
@@ -14,12 +15,12 @@ namespace vstplayer
 namespace
 {
 constexpr int kDefaultWidth = 1024;
-constexpr int kDefaultHeight = 640;
+constexpr int kDefaultHeight = 700;
 constexpr int kMinWidth = 640;
-constexpr int kMinHeight = 400;
+constexpr int kMinHeight = 480;
 } // namespace
 
-MainWindow::MainWindow (const juce::String& title, AppSettings& s, AudioEngine& e, PluginManager& p)
+MainWindow::MainWindow (const juce::String& title, AppSettings& s, AudioEngine& e, PluginManager& p, InstanceGraph& instances)
     : DocumentWindow (title,
                       juce::Desktop::getInstance().getDefaultLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId),
                       DocumentWindow::allButtons),
@@ -30,7 +31,7 @@ MainWindow::MainWindow (const juce::String& title, AppSettings& s, AudioEngine& 
     setUsingNativeTitleBar (true);
     setMenuBar (this);
 
-    auto content = std::make_unique<MainContent> (engine, plugins);
+    auto content = std::make_unique<MainContent> (engine, plugins, instances);
     content->onShowAudioSettings = [this] { showAudioSettings(); };
     content->onShowPlugins = [this] { showPluginList(); };
     setContentOwned (content.release(), true);
@@ -62,6 +63,11 @@ void MainWindow::closeButtonPressed()
 void MainWindow::saveWindowState()
 {
     settings.setMainWindowState (getWindowStateAsString());
+}
+
+InstancePanel& MainWindow::getInstancePanel()
+{
+    return dynamic_cast<MainContent&> (*getContentComponent()).getInstancePanel();
 }
 
 void MainWindow::setAudioError (const juce::String& message)

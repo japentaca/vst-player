@@ -14,6 +14,7 @@
 #include <windows.h>
 
 #include <cstdlib>
+#include <cstring>
 
 namespace vstplayer::cli
 {
@@ -81,6 +82,51 @@ void print (const juce::String& line)
     const auto text = (line + "\r\n").toStdString(); // UTF-8
     DWORD written = 0;
     WriteFile (handle, text.data(), (DWORD) text.size(), &written, nullptr);
+}
+
+namespace
+{
+LONG CALLBACK captureDebugString (EXCEPTION_POINTERS* info)
+{
+    // OutputDebugStringW ends up raising the ANSI variant too when no debugger handles it, so
+    // only DBG_PRINTEXCEPTION_C is copied. Plain Win32 here: this also runs during static
+    // destruction (leak detector).
+    const auto* record = info->ExceptionRecord;
+
+    if (record->ExceptionCode == DBG_PRINTEXCEPTION_C && record->NumberParameters >= 2)
+    {
+        const auto length = (size_t) record->ExceptionInformation[0];
+        const auto* text = reinterpret_cast<const char*> (record->ExceptionInformation[1]);
+        const auto handle = getOutputHandle();
+
+        if (text != nullptr && length > 0 && handle != nullptr && handle != INVALID_HANDLE_VALUE)
+        {
+            auto n = strnlen (text, length);
+
+            while (n > 0 && (text[n - 1] == '\n' || text[n - 1] == '\r'))
+                --n;
+
+            DWORD written = 0;
+            WriteFile (handle, "[debug] ", 8, &written, nullptr);
+            WriteFile (handle, text, (DWORD) n, &written, nullptr);
+            WriteFile (handle, "\r\n", 2, &written, nullptr);
+        }
+    }
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+} // namespace
+
+void installDebugOutputCapture()
+{
+    static bool installed = false;
+
+    if (! installed)
+    {
+        getOutputHandle(); // resolve now, not inside the handler
+        AddVectoredExceptionHandler (1, captureDebugString);
+        installed = true;
+    }
 }
 
 int runScanChild (const juce::StringArray& args)

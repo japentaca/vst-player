@@ -7,6 +7,8 @@ namespace vstplayer
 
 class AppSettings;
 class AudioEngine;
+class InstanceGraph;
+class InstancePanel;
 class PluginManager;
 class PluginListWindow;
 
@@ -15,7 +17,8 @@ class MainWindow final : public juce::DocumentWindow,
                          private juce::MenuBarModel
 {
 public:
-    MainWindow (const juce::String& title, AppSettings& settings, AudioEngine& engine, PluginManager& plugins);
+    MainWindow (const juce::String& title, AppSettings& settings, AudioEngine& engine, PluginManager& plugins,
+                InstanceGraph& instances);
     ~MainWindow() override;
 
     void closeButtonPressed() override;
@@ -28,6 +31,7 @@ public:
     void setAudioError (const juce::String& message);
     // Opens the plugin list window; startScan = also press "Escanear".
     void showPluginList (bool startScan = false);
+    InstancePanel& getInstancePanel();
 
 private:
     enum MenuIndex

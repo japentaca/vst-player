@@ -221,3 +221,122 @@ también funcionen en Windows PowerShell 5.1, aunque se probaron con pwsh 7.
   JUCE con ventanas modales); hay que cerrar el diálogo primero.
 - El orden de la lista que imprime `--scan` se invierte entre ejecuciones (cosmético; la GUI ordena
   por columna).
+
+## Etapa 3 — Instancias y grafo  (2026-11-01)
+**Hecho:**
+- Grafo: `AudioEngine` ahora tiene un **mezclador de salida** (nodo `GainProcessor` "Mezcla" a 0 dB con
+  medidor de pico) entre las fuentes y el nodo de salida; el tono de prueba también entra por ahí.
+  Por instancia: `MidiSourceProcessor` → plugin → `GainProcessor` (ganancia en dB −60…+12, mute,
+  rampa de 20 ms, medidor de pico) → mezclador.
+- `src/engine/InstanceGraph.{h,cpp}`: `addInstance(PluginDescription) -> InstanceId` (UUID) con
+  `createPluginInstanceAsync` (la instancia aparece enseguida en estado "cargando"; si falla queda en
+  estado "error" con un mensaje legible: nombre, ruta y el error de JUCE). `removeInstance`,
+  `removeAllInstances`, `getInstances`, `findInstance`, `setName`, `setGainDb`, `setMute`,
+  `setEditorWindowState`, `sendMidi`, `panic()`. Listeners: `instanceListChanged`,
+  `instanceAboutToBeRemoved` (la UI cierra el editor **antes** de quitar los nodos),
+  `instanceLoadFinished`. Todo en el hilo de mensajes; cambios agrupados con `UpdateKind::async` +
+  `rebuild()` síncrono, y el plugin se destruye después del rebuild (el hilo de audio ya no lo usa).
+  Una carga que termina después de quitar la instancia (o de destruir el grafo, vía `WeakReference`)
+  descarta el plugin.
+- **Plugins con más de 2 salidas**: se llama `disableNonMainBuses()` (apaga salidas extra y
+  sidechains) y sólo los canales 0 y 1 del bus principal van al mezclador. Un plugin mono alimenta L y R.
+- `src/engine/MidiSourceProcessor.h`: entrada MIDI por instancia con `MidiMessageCollector` (seguro
+  desde cualquier hilo, convierte timestamps a offsets dentro del bloque; es el punto donde la etapa 4
+  va a escribir desde los puertos MIDI). Pánico = bandera atómica: en el bloque siguiente descarta lo
+  pendiente y emite CC64=0 + All Notes Off (CC123) + All Sound Off (CC120) en los 16 canales.
+- `src/engine/Instance.h`: id, nombre editable, `PluginDescription`, estado (loading/ready/failed) y
+  error, nodos (MIDI, plugin, ganancia), gain, mute, estado de ventana (abierta, posición).
+- `src/ui/PluginEditorWindow.{h,cpp}`: `DocumentWindow` con el editor propio
+  (`createEditorAndMakeActive`, el reemplazo no deprecado de `createEditorIfNeeded`) o
+  `GenericAudioProcessorEditor` si no tiene. Una ventana por instancia: "Editor" con la ventana abierta
+  la trae al frente. Cerrar la ventana guarda la posición en la instancia y destruye la ventana (y el
+  editor), **no** la instancia; al reabrir vuelve a la misma posición (si sigue en alguna pantalla).
+- `src/ui/InstancePanel.{h,cpp}` (UI provisoria, dentro de `MainContent`): "Agregar instancia…"
+  (popup de la `KnownPluginList` agrupado por fabricante), "Pánico", una fila por instancia (nombre
+  editable con doble clic, plugin/estado o error en rojo, slider de ganancia en dB, Mute, Editor,
+  Quitar) y teclado virtual (`MidiKeyboardComponent`, canal 1) al pie que toca la instancia
+  seleccionada (clic en la fila). El note-off va a la instancia que recibió el note-on aunque la
+  selección haya cambiado (no quedan notas colgadas al cambiar de fila).
+- Hooks de prueba nuevos (ver `src/app/InstanceSelfTest.h` y `src/app/CommandLine.h`):
+  - `VstPlayer.exe --instance-selftest`: abre la GUI real y ejecuta sin intervención: carga Dexed y
+    Surge XT (−30 dB para no aturdir), abre/cierra sus editores (uno por la API del panel y otro por
+    su botón de cierre), reabre en la posición guardada, toca notas con el estado del teclado virtual
+    y mide el pico en cada nodo de ganancia y en la mezcla, prueba mute y pánico, cambia el buffer con
+    las instancias cargadas, carga sforzando y abre su editor, quita Surge XT con el editor abierto y
+    sale con el editor de Dexed abierto. Exit code 0 sólo si todo pasó. En este modo no se guarda la
+    configuración de audio ni la de la ventana.
+  - `--instance-selftest --plugin "<nombre>"`: versión corta para un solo plugin.
+  - `--debug-to-stdout` (cualquier modo): copia todo `OutputDebugString` del proceso a stdout como
+    `[debug] ...` (handler vectorizado de excepciones sobre `DBG_PRINTEXCEPTION_C`, activo hasta el
+    final del proceso, así captura también el detector de fugas).
+  - `tools/run-gui-test.ps1 [-Config Debug|Release] [-AppArgs ...] [-AllowedLeaks ...]`: corre el exe
+    con `--debug-to-stdout`, muestra la salida y falla si el exit code ≠ 0, si hubo `jassert` o fugas.
+- **Corrección a lo dicho en las etapas 1 y 2**: sin depurador, un `jassert` en Debug **no** termina
+  el proceso (JUCE sólo hace `OutputDebugString`), así que "exit 0 en Debug" no probaba ausencia de
+  aserciones ni de fugas. Desde esta etapa se verifica con `--debug-to-stdout`. Primero se intentó
+  escuchar el buffer DBWIN (como DebugView), pero en esta máquina otro proceso ya lo escucha y se
+  perdían líneas; por eso la captura es dentro del proceso.
+
+**Archivos:** nuevos `src/engine/Instance.h`, `src/engine/InstanceGraph.{h,cpp}`,
+`src/engine/GainProcessor.h`, `src/engine/MidiSourceProcessor.h`, `src/ui/PluginEditorWindow.{h,cpp}`,
+`src/ui/InstancePanel.{h,cpp}`, `src/app/InstanceSelfTest.{h,cpp}`, `tools/run-gui-test.ps1`;
+cambiados `CMakeLists.txt`, `src/Main.cpp`, `src/app/CommandLine.{h,cpp}`, `src/app/MainWindow.{h,cpp}`
+(tamaño por defecto 1024x700, mínimo 640x480), `src/engine/AudioEngine.{h,cpp}`,
+`src/ui/MainContent.{h,cpp}`, `docs/progress.md`.
+
+**Verificación:**
+- `pwsh -NoProfile -File .\tools\build.ps1` y `-Config Debug` → OK, sin warnings en nuestro código
+  (se reemplazaron dos APIs deprecadas de JUCE 8: `createEditorIfNeeded`, `Display::userArea`).
+- `pwsh -NoProfile -File .\tools\run-gui-test.ps1 -Config Release` → `RESULTADO: OK`, exit 0, 23 s.
+  Salida relevante (WASAPI compartido, Focusrite, 48 kHz / 480):
+  - Dexed y Surge XT cargan (2 salidas, aceptan MIDI, editor propio). Editores 867x675 y 1370x854,
+    visibles; cerrados → ventanas destruidas, instancias vivas, posición guardada; Dexed reabre en la
+    misma posición (168, 74); "Editor" con la ventana abierta reutiliza la misma.
+  - Notas por el teclado virtual (Dexed C4 y Surge XT G4 a la vez): pico Dexed −47.6 dBFS, Surge XT
+    −43.9 dBFS, **mezcla (salida) −39.8 dBFS** (ganancias en −30 dB) → el ruteo
+    teclado → colector → plugin → ganancia → mezcla → salida funciona. 2 eventos MIDI encolados y
+    entregados por instancia.
+  - Mute de Dexed: pico 0 exacto. Nota colgada en Surge XT (note-on sin note-off) suena; tras "Pánico":
+    Surge XT, Dexed y mezcla en silencio.
+  - Cambio de buffer con instancias cargadas: WASAPI compartido sólo ofrece 480, así que el test pasa a
+    DirectSound con 128: dispositivo reabierto, Dexed/Surge/mezcla re-preparados con bloque 128 y
+    siguen sonando con los mismos picos; se restaura WASAPI 480, re-preparados con 480, siguen sonando.
+  - sforzando carga (2 salidas, MIDI), su editor abre (774x498, propio), se cierra y se quita.
+  - Quitar Surge XT con el editor abierto: la ventana se cierra antes, queda sólo Dexed, que sigue
+    sonando (pico en Dexed y en la mezcla). Salida de la app con el editor de Dexed abierto: exit 0.
+- `run-gui-test.ps1 -Config Debug -AllowedLeaks VST3HostContextHeadless,AsyncUpdater` (2 corridas):
+  mismos resultados, **0 aserciones de JUCE**; únicas fugas: `VST3HostContextHeadless` y su
+  `AsyncUpdater` (ver Pendiente). Por plugin (`--plugin`): Dexed y Surge XT en Debug → 0 aserciones,
+  0 fugas.
+- GUI normal en Debug con `--debug-to-stdout`, cerrada con `CloseMainWindow()` → exit 0, sin debug output.
+- `--audio-selftest` (etapa 2) sigue OK con el tono pasando por el mezclador.
+- `settings.xml` conserva `Windows Audio` tras los tests (el modo self-test no persiste el audio).
+- Captura de pantalla de la ventana durante el test: filas, sliders, botones y teclado bien ubicados
+  a 900x559 (lógicos) con el escalado de Windows.
+
+**Pendiente / problemas:**
+- **Fuga en sforzando (lado del plugin)**: en Debug, cargar y quitar sforzando deja vivo el
+  `VST3HostContextHeadless` de JUCE (objeto COM con conteo de referencias que se le pasa al plugin) y
+  su `AsyncUpdater`. Ocurre aunque no se abra el editor y aunque no se llame a
+  `disableNonMainBuses()` (ambas cosas probadas), y no ocurre con Dexed ni Surge XT por el mismo camino
+  de código: sforzando 2.1.2.3 se queda con una referencia al host. Son unos cientos de bytes por
+  instancia cargada; no afecta el funcionamiento. Por eso el test completo en Debug se corre con
+  `-AllowedLeaks VST3HostContextHeadless,AsyncUpdater`.
+- **Verificación manual pendiente (usuario)**, con `build\VstPlayer_artefacts\Release\VstPlayer.exe`:
+  1. "Agregar instancia…" → Digital Suburban → Dexed; otra vez → Surge Synth Team → Surge XT.
+  2. Clic en la fila de Dexed y tocar el teclado virtual con el mouse (o con el teclado de la PC tras
+     hacer clic en el teclado virtual: A, W, S, E, D…): se oye Dexed. Clic en la fila de Surge XT y
+     tocar: se oye Surge XT. Mantener una tecla con el mouse en una, cambiar de fila y tocar la otra:
+     suenan las dos juntas, sin notas colgadas al soltar.
+  3. Slider de ganancia y Mute de cada fila: el volumen cambia sin clicks. "Pánico" corta todo.
+  4. "Editor" de cada una: abre su interfaz; moverla, cerrarla, volver a abrir → misma posición; el
+     sonido sigue. Con el editor de Surge XT abierto, "Quitar" → se cierra sin colgarse.
+  5. sforzando: agregarlo (Plogue → sforzando), "Editor", cargar un `.sfz` desde su interfaz
+     (arrastrando el archivo o con su menú de instrumentos) y tocarlo con el teclado virtual.
+  6. Con instancias sonando, Audio → Configuración de audio…: pasar a DirectSound con buffer 128 y
+     volver a Windows Audio; la app no debe caerse (puede haber un corte breve de audio).
+- La UI es provisoria (se reemplaza en la etapa 6): el estado de la ventana del editor se guarda en la
+  instancia pero todavía no se persiste (etapa 5). Si la app se cierra mientras un plugin está
+  cargando, la carga pendiente se descarta.
+- Observación lateral (etapa 2): con `--show-plugins`, `CloseMainWindow()` apunta a la ventana de
+  plugins y no a la principal, así que un script que sólo hace eso no cierra la app.

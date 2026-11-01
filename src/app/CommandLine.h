@@ -38,6 +38,13 @@ Mode detectMode (const juce::StringArray& args);
 // Writes a line to the parent console / redirected stdout (the app is a GUI-subsystem exe).
 void print (const juce::String& line);
 
+// "--debug-to-stdout" (any mode): copies every OutputDebugString of the process (JUCE DBG,
+// "JUCE Assertion failure in ...", the leak detector at exit, plugins' own messages) to stdout
+// as "[debug] <text>". Without a debugger a jassert does not stop a Debug build, it only logs,
+// so automated tests use this to catch assertions and leaks. Implemented with a vectored
+// exception handler on DBG_PRINTEXCEPTION_C; stays active until the process ends.
+void installDebugOutputCapture();
+
 int runScan (const juce::StringArray& args, AppSettings& settings);
 int runScanChild (const juce::StringArray& args);
 int runAudioSelfTest (const juce::StringArray& args, AppSettings& settings);
