@@ -225,13 +225,52 @@ ApiController::Reply ApiController::fail (int status, const juce::String& code, 
     return { status, juce::var (o) };
 }
 
+namespace
+{
+// juce::JSON::parse recurses once per nesting level with no limit: a body like "[[[[..." a few
+// hundred thousand levels deep (any web page can POST one: CORS *) would overflow the network
+// thread's stack and take the whole app down. No command needs more than a handful of levels.
+bool isNestedTooDeep (const std::string& text, int maxDepth)
+{
+    int depth = 0;
+    bool inString = false, escaped = false;
+
+    for (const auto c : text)
+    {
+        if (inString)
+        {
+            if (escaped)
+                escaped = false;
+            else if (c == '\\')
+                escaped = true;
+            else if (c == '"')
+                inString = false;
+        }
+        else if (c == '"')
+            inString = true;
+        else if (c == '[' || c == '{')
+        {
+            if (++depth > maxDepth)
+                return true;
+        }
+        else if (c == ']' || c == '}')
+            --depth;
+    }
+
+    return false;
+}
+} // namespace
+
 std::string ApiController::handleRequest (const std::string& body, int& status)
 {
     juce::var request;
     Reply reply;
     juce::String cmd;
 
-    const auto parsed = juce::JSON::parse (juce::String::fromUTF8 (body.data(), (int) body.size()), request);
+    constexpr int kMaxJsonDepth = 64;
+    const auto tooDeep = isNestedTooDeep (body, kMaxJsonDepth);
+    const auto parsed = tooDeep ? juce::Result::fail (juce::String::fromUTF8 ("anidamiento de más de ") + juce::String (kMaxJsonDepth) + " niveles")
+                                : juce::JSON::parse (juce::String::fromUTF8 (body.data(), (int) body.size()), request);
 
     if (parsed.failed())
     {
@@ -705,12 +744,12 @@ void ApiController::resolveLoadWaiters()
     if (loadWaiters.empty())
         return;
 
-    const auto reply = makeLoadReply();
     auto waiters = std::move (loadWaiters);
     loadWaiters.clear();
 
+    // One reply object per waiter: each network thread adds its own "id" / "cmd" to it.
     for (auto& waiter : waiters)
-        waiter (reply);
+        waiter (makeLoadReply());
 }
 
 void ApiController::cmdListProjects (const juce::var& request, const Responder& respond)
@@ -1067,6 +1106,7 @@ void ApiController::cmdAudioStats (const juce::var&, const Responder& respond)
     data->setProperty ("callbackMaxMs", stats.maxMs);
     data->setProperty ("blockMs", stats.budgetMs);
     data->setProperty ("overBudget", stats.overBudget);
+    data->setProperty ("graphNodes", engine.getGraph().getNumNodes());
 
     if (auto* mixer = engine.getMixer())
         data->setProperty ("mixerBlocks", mixer->getBlocksProcessed());

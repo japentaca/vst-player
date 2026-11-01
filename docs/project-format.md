@@ -130,6 +130,8 @@ aviso.
 
 ## Archivos relacionados (en `%APPDATA%\VstPlayer\`)
 
+(o en la carpeta indicada con `VstPlayer.exe --data-dir <carpeta>`)
+
 - `recent.json`: `{ "version": 1, "recent": [ "C:\\...\\a.vstproj.json", ... ] }`, máximo 10, el más reciente primero.
 - `autosave.vstproj.json`: respaldo automático cada 2 minutos mientras hay cambios sin guardar (mismo
   formato; no cambia el archivo del proyecto ni el `*`). Se borra al guardar. No se abre solo: para

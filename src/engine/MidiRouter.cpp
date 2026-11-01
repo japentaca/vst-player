@@ -65,16 +65,17 @@ void MidiRouter::setRoutes (std::vector<MidiRoute> newRoutes)
     if (newRoutes == routes)
         return;
 
-    {
-        const juce::ScopedLock sl (lock);
-
-        for (auto& [id, target] : targets)
-            releaseHeldLocked (*target);
-    }
-
     routes = std::move (newRoutes);
     ++editCounter;
     refreshDevices();
+
+    // Notes held through the old routes would never get their note-off. Released only after
+    // refreshDevices() swapped in the new dispatch table: until then the MIDI thread still
+    // delivers (and marks as held) note-ons through the old routes.
+    const juce::ScopedLock sl (lock);
+
+    for (auto& [id, target] : targets)
+        releaseHeldLocked (*target);
 }
 
 std::vector<MidiRoute> MidiRouter::getRoutesForInstance (const InstanceId& id) const
@@ -98,9 +99,6 @@ void MidiRouter::setRoutesForInstance (const InstanceId& id, std::vector<MidiRou
     if (getRoutesForInstance (id) == instanceRoutes)
         return;
 
-    // Notes held through the old routes would never get their note-off: release them now.
-    releaseHeldNotesOf ({ id });
-
     routes.erase (std::remove_if (routes.begin(), routes.end(), [&id] (const MidiRoute& r) { return r.instanceId == id; }),
                   routes.end());
 
@@ -110,6 +108,10 @@ void MidiRouter::setRoutesForInstance (const InstanceId& id, std::vector<MidiRou
     ++editCounter;
 
     refreshDevices();
+
+    // Notes held through the old routes would never get their note-off: release them, after the
+    // new dispatch table is in place (see setRoutes).
+    releaseHeldNotesOf ({ id });
 }
 
 void MidiRouter::panic()

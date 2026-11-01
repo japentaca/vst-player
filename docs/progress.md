@@ -990,3 +990,178 @@ cambiados `CMakeLists.txt`, `src/Main.cpp`, `src/app/MainWindow.{h,cpp}`, `src/a
   cierra).
 - No hay UI para cambiar puerto o token (se editan en `settings.xml`, documentado). Un puerto ocupado se
   muestra en rojo en la barra de estado y la app sigue funcionando sin API.
+
+## Etapa 8 — Empaquetado, documentación y cierre  (2026-11-01)
+**Hecho:**
+- **Runtime de MSVC estático** (`CMAKE_MSVC_RUNTIME_LIBRARY = MultiThreaded$<$<CONFIG:Debug>:Debug>` en
+  `CMakeLists.txt`, para todos los targets, JUCE incluido): `VstPlayer.exe` ya no depende de
+  `MSVCP140.dll` / `VCRUNTIME140*.dll` / `api-ms-win-crt-*` (antes sí). Recompilación completa de `build\` y
+  `build-debug\` (una vez).
+- **`tools/package.ps1 [-SkipBuild] [-OutDir]`**: lee la versión de `project(VstPlayer VERSION x.y.z)`,
+  compila Release (con `build.ps1`), verifica que el recurso de versión del exe coincida (un build viejo
+  no pasa), y arma `dist\VstPlayer-<versión>-win64.zip` con carpeta raíz `VstPlayer-<versión>-win64\`:
+  `VstPlayer.exe`, `README.md`, `examples\` (con `sfz\`), `docs\*.md`, `tools\register-filetype.ps1`.
+  `dist/` en `.gitignore`. La versión ya se mostraba en Ayuda → Acerca de (`JUCE_APPLICATION_VERSION_STRING`
+  = versión del proyecto CMake desde la etapa 1).
+- **`tools/register-filetype.ps1 [-ExePath] [-Unregister]`** (sólo HKCU, sin administrador). Windows
+  decide el tipo por la **última** extensión, así que `*.vstproj.json` es un `.json` para el Explorador y
+  no puede tener programa por defecto propio. El script no se apropia de `.json`; escribe en
+  `HKCU\Software\Classes`: ProgID `VstPlayer.Project` (nombre, icono, `"exe" "%1"`), el valor
+  `VstPlayer.Project` en `.json\OpenWithProgids` (aparece en "Abrir con"), `Applications\VstPlayer.exe`
+  (nombre + `SupportedTypes .json`) y el verbo de menú contextual
+  `SystemFileAssociations\.json\shell\VstPlayer.Open` "Abrir en VstPlayer" con
+  `AppliesTo = System.FileName:"*.vstproj.json"` (sólo para esos archivos). Avisa al shell
+  (`SHChangeNotify`). `-Unregister` borra lo propio y sólo las claves que quedan vacías. El exe por
+  defecto: `..\VstPlayer.exe` (zip) o el Release del repo.
+- **`--data-dir <carpeta>`** (nuevo, cualquier modo): todo lo del usuario (`settings.xml`, `plugins.xml`,
+  `recent.json`, autoguardado, log del escaneo) va a esa carpeta en lugar de `%APPDATA%\VstPlayer`
+  (`AppSettings::setUserDataDirectoryOverride`; `AppSettings` abre el `PropertiesFile` por ruta). Con
+  `--data-dir` se permite otra instancia de la GUI (es otra configuración). Sirve para probar el zip
+  sin tocar los datos del usuario y para tener configuraciones separadas.
+- Arranque sin plugins escaneados (primera vez o `--data-dir` nuevo): la barra de estado dice
+  "No hay plugins escaneados: apretá "Plugins…" → Escanear." (el README lo explica).
+- `tools/build.ps1 -BuildDir <dir>`: compilar en otro directorio (para la prueba "de cero").
+- **`README.md`** (español): qué es, requisitos, instalación desde el zip, escaneo, asociación opcional,
+  uso rápido, flujo carrilion → loopMIDI → VstPlayer, formato de proyecto, API (con ejemplo de consola),
+  latencia, línea de comandos, cómo compilar, licencia. **`CLAUDE.md`**: decisiones fijas, estructura,
+  compilar, suite de pruebas (Release/Debug), reglas de hilos, convenciones, pendientes.
+  **`docs/roadmap.md`**: pendientes conocidos (valores viejos de parámetros, creación de VST3 en el hilo de
+  UI, fuga de sforzando, buffer 480 de WASAPI compartido / ASIO, etc.) y siguientes pasos (ASIO con SDK,
+  CLAP, multisalida, efectos por instancia, grabación a WAV, MIDI clock, Windows MIDI Services, plugins
+  fuera de proceso…). `docs/api.md` y `docs/project-format.md`: notas de `--data-dir`, límite de
+  anidamiento y `graphNodes`.
+- **Revisión final (tarea 5)**: tres revisiones de lectura en paralelo (API/red, motor/hilos, UI/ciclo de
+  vida/proyecto) y verificación propia de cada hallazgo antes de tocar código. Corregido (bugs reales):
+  1. **Reabrir un proyecto mientras todavía carga dejaba plugins huérfanos en el grafo**
+     (`InstanceGraph`). Las instancias de un proyecto usan los `id` del archivo; `removeAllInstances` no
+     sacaba de la cola las creaciones pendientes, y al volver a crear instancias con los mismos `id` las
+     entradas viejas coincidían: el plugin se creaba dos veces y `pluginCreated` pisaba los nodos de la
+     instancia, dejando el primer juego (MIDI + plugin + ganancia) conectado a la mezcla para siempre, con
+     el editor que se reabría atado al huérfano. **Evidencia** (build con el código anterior + script por la
+     API): `graphNodes` 11 tras una carga normal → **14** tras `loadProject` A y enseguida B (mismos ids).
+     Corrección: `removeInstance` borra de la cola las creaciones de ese id, y `pluginCreated` descarta un
+     plugin si la instancia no está en estado `loading`. Con el arreglo: 11 → 11.
+  2. **Un JSON muy anidado tumbaba la app** (`ApiController`). `juce::JSON::parse` es recursivo sin
+     límite; cualquier página del navegador puede mandar `POST /api` (CORS `*`, sin preflight con
+     text/plain). **Evidencia**: `[` × 300 000 → la app murió con **0xC00000FD** (stack overflow) y el
+     puerto dejó de responder. Corrección: se rechaza sin parsear todo JSON con más de 64 niveles de
+     anidamiento (`badJson`, 400). Con el arreglo: 400 y el servidor sigue.
+  3. **Varios `loadProject` esperando la misma carga compartían el objeto de respuesta**: cada hilo de red
+     le escribía su `id`/`cmd` mientras otro lo serializaba (carrera de datos; `id` cruzado). Ahora cada
+     espera recibe su propio objeto.
+  4. **`broadcast()` (hilo de mensajes) podía quedar esperando a un cliente WebSocket lento**: tomaba el
+     mismo mutex que el hilo emisor mantiene durante `send()` (hasta 5 s por socket trabado), congelando
+     la UI cada 50 ms con el timer de `paramChanged`. Ahora mira un contador atómico. De paso: el conteo
+     de clientes se publica dentro del lock (antes dos conexiones/desconexiones simultáneas podían dejar
+     `numClients` en 0 con un cliente conectado y se dejaban de mandar eventos), y una excepción dentro del
+     manejador de un mensaje WebSocket se responde como error en lugar de terminar la app (cpp-httplib
+     no las atrapa en WebSocket).
+  5. **Nota colgada al cambiar rutas MIDI** (`MidiRouter::setRoutes` / `setRoutesForInstance`): las notas
+     sostenidas se soltaban *antes* de abrir puertos nuevos e instalar la nueva tabla de despacho; un
+     note-on que llegaba en ese intervalo (abrir un puerto tarda decenas de ms) quedaba marcado por la ruta
+     vieja y su note-off ya no tenía ruta. Ahora se sueltan después del cambio de tabla (como ya hacía
+     `closePort`). Ventana de carrera chica: sin reproducción determinística; cubierto por el
+     `--midi-selftest` como regresión.
+  - Revisado y **sin cambios** (con motivo):
+    - Orden de cierre (`Main.cpp::shutdown`): API primero (los pedidos pendientes responden 503, se esperan
+      los hilos), ventana y editores, router, grafo, motor: correcto.
+    - Quitar instancias con MIDI/API en vuelo: router y API sacan sus punteros bajo lock en
+      `instanceAboutToBeRemoved`, antes de quitar nodos; el hilo de audio mantiene los nodos vivos vía el
+      render sequence de JUCE: correcto.
+    - Editores: se cierran antes de quitar la instancia; callbacks async con `SafePointer`/`WeakReference`:
+      correcto. Guardado atómico (temporal + `ReplaceFileW`) y errores de carga (JSON roto, archivo
+      inexistente, plugin faltante o que falla): estado consistente.
+    - Un comando que vence su timeout (504) igual se ejecuta después en el hilo de mensajes: un reintento
+      del cliente puede ejecutarlo dos veces. Se deja: sólo pasa si la UI estuvo bloqueada más que el
+      timeout (10–120 s) y los comandos son idempotentes salvo `saveProject`.
+    - `finishLoading` diferido / `openEditor` diferido pueden aplicarse a un proyecto más nuevo con los
+      mismos ids si se reabre en el mismo instante: efecto cosmético (aviso duplicado, editor abierto); se
+      deja documentado.
+    - `anotherInstanceStarted` resuelve una ruta relativa contra la carpeta de la instancia abierta (el
+      Explorador siempre pasa rutas absolutas); no restaura una ventana minimizada.
+    - Estadísticas de callback (`AudioEngine`): carrera benigna entre el reset y el hilo de audio (sólo
+      diagnóstico). Plugin quitado sin dispositivo de audio corriendo: JUCE lo destruye recién cuando el
+      grafo vuelve a renderizar (seguro). Precarga de DLL que tarde > 30 s al cerrar: muy improbable.
+    - Carrera de JUCE al destruir un listener de parámetros mientras el hilo de audio notifica (ventana de
+      microsegundos al cerrar; limitación de `AudioProcessorParameter`).
+- `tools/api-test.mjs`: casos nuevos para 1–3 (JSON anidado por HTTP y WebSocket, dos `loadProject`
+  seguidos con mismos ids: cada respuesta con su id, estado del segundo proyecto, mismo `graphNodes`).
+  `audioStats` devuelve `graphNodes` (diagnóstico).
+
+**Archivos:** nuevos `README.md`, `CLAUDE.md`, `docs/roadmap.md`, `tools/package.ps1`,
+`tools/register-filetype.ps1`; cambiados `.gitignore` (`dist/`), `CMakeLists.txt` (runtime estático),
+`tools/build.ps1` (`-BuildDir`), `src/Main.cpp`, `src/app/AppSettings.{h,cpp}`, `src/api/ApiServer.cpp`,
+`src/api/ApiController.cpp`, `src/engine/InstanceGraph.cpp`, `src/engine/MidiRouter.cpp`,
+`tools/api-test.mjs`, `docs/api.md`, `docs/project-format.md`, `docs/progress.md`.
+
+**Verificación:**
+- `pwsh -NoProfile -File .\tools\build.ps1` y `-Config Debug` → OK, sin warnings en nuestro código
+  (recompilación completa por el cambio de runtime: Release ~104 s).
+- **Compila de cero** sin tocar `build\`: `tools\build.ps1 -BuildDir %TEMP%\vstp-clean-build` (carpeta
+  nueva y vacía; FetchContent clonó JUCE 8.0.15 y cpp-httplib de nuevo) → **Build Release OK, 205 s en
+  total** (configure + clon + compilación, 60 pasos de Ninja, 0 warnings nuestros); `ctest` en esa carpeta
+  → 100 %. Carpeta borrada al final (fuera del repo; `build-*/` y `dist/` igual están en `.gitignore`).
+- **Dependencias del exe** (`dumpbin /dependents`): sólo DLLs del sistema (`KERNEL32`, `USER32`, `GDI32`,
+  `SHELL32`, `ole32`, `OLEAUT32`, `COMDLG32`, `SHLWAPI`, `WINMM`, `IMM32`, `COMCTL32`, `WS2_32`, `dwmapi`,
+  `d2d1`, `dxgi`, `d3d11`, `dcomp`, `api-ms-win-shcore-scaling-l1-1-1`), todas presentes en Windows 10/11.
+  Antes de esta etapa además `MSVCP140`, `VCRUNTIME140(_1)` y 12 `api-ms-win-crt-*` (redistribuible).
+  Recurso de versión del exe: `ProductVersion 0.1.0`.
+- `pwsh -NoProfile -File .\tools\package.ps1 -SkipBuild` → `dist\VstPlayer-0.1.0-win64.zip` (3,0 MB): exe
+  6,8 MB, README.md, docs (api, progress, project-format, roadmap), examples (2 proyectos, cliente JS,
+  sfz), tools\register-filetype.ps1.
+- **Zip en una carpeta nueva fuera del repo** (`%TEMP%\vstp-zip-test-*`, script en el scratchpad), con
+  `--data-dir` en una carpeta temporal:
+  1. `VstPlayer.exe --data-dir <tmp> --scan` (lo que dice el README para la primera vez) → 7 archivos, 7
+     procesos hijos, 2 s, 7 plugins (Dexed, Surge XT, sforzando, …), `plugins.xml` en la carpeta temporal.
+  2. `VstPlayer.exe --data-dir <tmp> --api-port 9476 examples\prueba-etapa5.vstproj.json` (desde la carpeta
+     descomprimida) → por la API: proyecto "Prueba etapa 5", Dexed / Pads (Surge XT) / Sampler (sforzando)
+     `ready`, 3 rutas desde "loopMIDI Port" (1 keep; 2,3 → remapTo 1; 4 keep), WASAPI 48000/480, `dirty: false`.
+  3. MIDI por loopMIDI con `VstPlayer.exe --midi-send "loopMIDI Port" …` (otro proceso): canal 1 → sólo
+     Dexed (−29.6 dBFS); canal 2 → sólo Pads (−25.5 dBFS); canal 5 → nadie (−100); `panic` → mezcla −100.
+  4. Cierre con `CloseMainWindow()` → exit 0. La carpeta temporal quedó con `settings.xml`, `plugins.xml`,
+     `recent.json`, `plugin-scan.log`; **`%APPDATA%\VstPlayer` idéntico (hash de cada archivo)**.
+  Carpeta borrada al final.
+- Arranque con `--data-dir` vacío y `--no-api`: leído por UI Automation, la barra de estado dice
+  "No hay plugins escaneados: apretá "Plugins…" → Escanear." y "API: desactivada"; cierre exit 0.
+- **`register-filetype.ps1` en HKCU**: registrar → `VstPlayer.Project` (nombre, icono y comando
+  `"…\VstPlayer.exe" "%1"`), `.json\OpenWithProgids` = `VSCode.json, VstPlayer.Project`, verbo
+  "Abrir en VstPlayer" con `AppliesTo System.FileName:"*.vstproj.json"`, `Applications\VstPlayer.exe` con
+  `SupportedTypes .json`, `.json` sigue con su default `json_auto_file`. `-Unregister` → las tres claves
+  propias no existen y `reg export HKCU\Software\Classes\.json` es **idéntico (hash) al de antes**. No
+  quedó nada registrado. **Problema encontrado y corregido en el camino**: la primera versión usaba
+  `New-Item -Force` sobre `.json\OpenWithProgids`, que en el registro recrea la clave vacía y borró el
+  valor `VSCode.json` del usuario; se restauró enseguida desde el `reg export` previo (verificado por hash)
+  y el script ahora sólo crea claves que faltan.
+- Evidencia de los bugs 1 y 2 (antes / después): build Release con `InstanceGraph.cpp` de `HEAD` y el
+  chequeo de anidamiento desactivado, script Node contra `--api-test --api-port 9478`: `graphNodes` 11 → 14
+  y `[`×300000 → `ECONNRESET`, proceso terminado con `0xC00000FD`. Con el código final: 11 → 11, 400
+  `badJson`, `status` sigue respondiendo, cierre exit 0.
+- **Suite completa después de las correcciones** (Release y Debug, en ese orden, sin intervención):
+
+  | Prueba | Release | Debug |
+  |---|---|---|
+  | `ctest` (round-trip) | OK | OK |
+  | `run-gui-test.ps1` (`--instance-selftest`) | OK, 24 s | OK, 0 aserciones, fuga conocida de sforzando |
+  | `run-gui-test.ps1 -AppArgs '--midi-selftest'` | OK, 50 s | OK, 0 aserciones, 0 fugas |
+  | `run-project-test.ps1` | OK, 37 s | OK, 0 aserciones, fuga conocida |
+  | `run-ui-test.ps1` | OK, 15 s | OK, 0 aserciones, fuga conocida |
+  | `run-api-test.ps1` | OK, **90 comprobaciones**, 0 fallos | OK, 90, 0 aserciones, fuga conocida |
+
+  (Debug con `-AllowedLeaks VST3HostContextHeadless,AsyncUpdater` donde se carga sforzando.)
+  `run-ui-test.ps1` informó "plugins.xml igual que antes: False" en las dos corridas (ya observado en la
+  etapa 7: el escaneo de esa prueba reescribe el archivo en otro orden; mismos 7 plugins, 0 en blacklist).
+- `%APPDATA%\VstPlayer` al final: `plugin-scan.log`, `plugins.xml`, `settings.xml` (hash de `settings.xml`
+  igual al del comienzo de la etapa); sin `recent.json` ni autoguardado.
+
+**Pendiente / problemas:**
+- **Verificación manual pendiente (usuario)**: con el zip descomprimido en otra carpeta y siguiendo sólo
+  el `README.md`: escanear plugins ("Plugins…" → Escanear), abrir `examples\prueba-etapa5.vstproj.json`,
+  elegir "loopMIDI Port" en carrilion (Chrome) y tocar: canal 1 → Dexed, 2 y 3 → Pads, 4 → Sampler
+  (sforzando sin instrumento cargado no suena: cargar un SFZ en su editor, p. ej. `examples\sfz\seno.sfz`).
+  Opcional: `tools\register-filetype.ps1`, clic derecho en un `.vstproj.json` → "Abrir en VstPlayer"
+  (no se probó el clic en el Explorador por programa; sí las claves) y luego `-Unregister`.
+- Asociación: un `*.vstproj.json` no puede abrirse con doble clic en VstPlayer sin cambiar el programa de
+  todos los `.json` (limitación de Windows; documentado en README y roadmap).
+- El ejecutable no está firmado (SmartScreen avisa la primera vez).
+- Pendientes de etapas anteriores sin cambios: ver `docs/roadmap.md` (valores viejos de parámetros, VST3
+  creado en el hilo de UI, fuga de sforzando, buffer 480 de WASAPI compartido / ASIO).

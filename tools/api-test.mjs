@@ -304,6 +304,12 @@ async function main() {
     const sAfter = await ws.send({ cmd: 'status' });
     const wsUnknown = ws.unsolicited.some((m) => m.code === "unknownCommand" && m.id === "x1");
     check(wsErrs === 1 && wsUnknown && sAfter.ok && ws.closed === null, 'WebSocket con JSON inválido: error y la conexión sigue abierta');
+    // Deeply nested JSON (stack overflow in the parser before stage 8): rejected without parsing.
+    r = await http('['.repeat(300000) + ']'.repeat(300000), { raw: true });
+    check(r.status === 400 && r.json.code === 'badJson', 'HTTP con JSON anidado 300000 niveles: 400 badJson', r.json.error);
+    ws.sendRaw('{"cmd":"status","x":' + '['.repeat(100000) + '}');
+    await sleep(300);
+    check(ws.unsolicited.filter((m) => m.code === 'badJson').length === 2 && ws.closed === null, 'WebSocket con JSON anidado: badJson y la conexión sigue abierta');
     r = await http({ cmd: 'status' });
     check(r.json.ok, 'el servidor sigue vivo');
 
@@ -337,6 +343,34 @@ async function main() {
     check(re['Pads'].gainDb === -30 && re['Dexed'].currentProgram === 5, 'el proyecto guardado conserva gain y programa', `Pads ${re['Pads'].gainDb} dB, Dexed programa ${re['Dexed'].currentProgram}`);
     r = await http({ cmd: 'getParam', instanceId: re['Pads'].id, index: target.index });
     check(Math.abs(r.json.param.value - 0.4) < 1e-3, 'el proyecto guardado conserva el parámetro movido por la API', `${r.json.param.value}`);
+
+    // Reopening while the previous project is still loading, with the same instance ids
+    // (api-guardado is prueba-etapa5 saved): before stage 8 the first load's queued creations
+    // were applied to the second load's instances (old state, orphaned nodes). Two waiters on
+    // one load also shared one reply object.
+    {
+        const nodesBefore = (await http({ cmd: 'audioStats' })).json.graphNodes;
+        const first = http({ cmd: 'loadProject', path: project1, discardChanges: true, id: 'carga-1' });
+        await sleep(30);
+        const second = http({ cmd: 'loadProject', path: savedPath, discardChanges: true, id: 'carga-2' });
+        const [r1, r2] = await Promise.all([first, second]);
+        check(r1.json.ok && r2.json.ok && r1.json.id === 'carga-1' && r2.json.id === 'carga-2',
+            'dos loadProject seguidos: cada respuesta con su id', `${r1.json.id} / ${r2.json.id}`);
+        r = await http({ cmd: 'status' });
+        const byName = Object.fromEntries(r.json.instances.map((i) => [i.name, i]));
+        check(r.json.project.path === savedPath && r.json.instances.length === 3 && r.json.instances.every((i) => i.state === 'ready'),
+            'gana el segundo proyecto: 3 instancias listas', r.json.instances.map((i) => i.name + ':' + i.state).join(', '));
+        r = await http({ cmd: 'getParam', instanceId: byName['Pads'].id, index: target.index });
+        const p2 = r.json.param.value;
+        check(Math.abs(p2 - 0.4) < 1e-3 && byName['Dexed'].currentProgram === 5 && byName['Pads'].gainDb === -30,
+            'las instancias tienen el estado del segundo proyecto (no el del primero)', `param ${p2}, Dexed programa ${byName['Dexed'].currentProgram}, Pads ${byName['Pads'].gainDb} dB`);
+        // Orphaned plugin nodes would stay in the graph: same node count as a plain load.
+        const nodesAfter = (await http({ cmd: 'audioStats' })).json.graphNodes;
+        check(nodesAfter === nodesBefore, 'mismo número de nodos en el grafo que con una carga normal (sin plugins huérfanos)', `${nodesAfter} vs ${nodesBefore}`);
+        await http({ cmd: 'panic' });
+        r = await http({ cmd: 'loadProject', path: savedPath, discardChanges: true });
+        check(r.json.ok, 'proyecto guardado reabierto para lo que sigue');
+    }
 
     //--------------------------------------------------------------------------
     // 50 setParam per second while a note sounds: audio callback health

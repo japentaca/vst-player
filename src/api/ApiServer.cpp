@@ -35,6 +35,10 @@ struct ApiServer::Impl
 
     mutable std::mutex socketsLock;
     std::set<httplib::ws::WebSocket*> sockets;
+    // sockets.size(), readable without socketsLock: senderLoop holds that lock while it sends,
+    // which can block for seconds on a client that stopped reading, and broadcast() (message
+    // thread) must not wait for that.
+    std::atomic<int> numSockets { 0 };
 
     std::function<void()>* onClientsChanged = nullptr;
 
@@ -105,10 +109,13 @@ struct ApiServer::Impl
         }
 
         {
+            // clientsChanged() inside the lock: concurrent connects/disconnects report their
+            // counts in order, so the last value reported is the real one.
             std::lock_guard<std::mutex> l (socketsLock);
             sockets.insert (&ws);
+            numSockets = (int) sockets.size();
+            clientsChanged();
         }
-        clientsChanged();
 
         ws.set_read_timeout (std::chrono::milliseconds (kWebSocketPollMs));
         std::string message;
@@ -130,21 +137,34 @@ struct ApiServer::Impl
             }
 
             numRequests.fetch_add (1);
-            const auto r = handler (message);
+            std::string replyText;
 
-            if (! ws.send (r.body))
+            // cpp-httplib does not catch exceptions thrown by a WebSocket handler (an escaping
+            // one would terminate the app); HTTP routes are already wrapped by httplib.
+            try
+            {
+                replyText = handler (message).body;
+            }
+            catch (...)
+            {
+                replyText = R"({"ok":false,"code":"failed","error":"Error interno al procesar el mensaje."})";
+            }
+
+            if (! ws.send (replyText))
                 break;
         }
 
         {
             std::lock_guard<std::mutex> l (socketsLock);
             sockets.erase (&ws);
+            numSockets = (int) sockets.size();
+
+            if (! stopping.load())
+                clientsChanged();
         }
 
         if (stopping.load())
             ws.close (httplib::ws::CloseStatus::GoingAway, "server stopping");
-        else
-            clientsChanged();
     }
 };
 
@@ -256,8 +276,7 @@ int ApiServer::getNumClients() const noexcept
     if (impl == nullptr)
         return 0;
 
-    std::lock_guard<std::mutex> l (impl->socketsLock);
-    return (int) impl->sockets.size();
+    return impl->numSockets.load();
 }
 
 long long ApiServer::getNumRequests() const noexcept
@@ -270,12 +289,8 @@ void ApiServer::broadcast (const std::string& text)
     if (impl == nullptr || ! impl->running.load())
         return;
 
-    {
-        std::lock_guard<std::mutex> l (impl->socketsLock);
-
-        if (impl->sockets.empty())
-            return;
-    }
+    if (impl->numSockets.load() == 0)
+        return;
 
     std::lock_guard<std::mutex> l (impl->queueLock);
 

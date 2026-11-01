@@ -8,6 +8,12 @@ namespace
 constexpr const char* kFolderName = "VstPlayer";
 constexpr const char* kMainWindowStateKey = "mainWindowState";
 
+juce::File& userDataDirectoryOverride()
+{
+    static juce::File dir;
+    return dir;
+}
+
 juce::PropertiesFile::Options makeOptions()
 {
     juce::PropertiesFile::Options options;
@@ -24,8 +30,10 @@ juce::PropertiesFile::Options makeOptions()
 } // namespace
 
 AppSettings::AppSettings()
-    : properties (std::make_unique<juce::PropertiesFile> (makeOptions()))
 {
+    const auto dir = getUserDataDirectory();
+    dir.createDirectory();
+    properties = std::make_unique<juce::PropertiesFile> (dir.getChildFile ("settings.xml"), makeOptions());
 }
 
 AppSettings::~AppSettings()
@@ -53,8 +61,16 @@ void AppSettings::setMainWindowState (const juce::String& state)
     properties->setValue (kMainWindowStateKey, state);
 }
 
+void AppSettings::setUserDataDirectoryOverride (const juce::File& dir)
+{
+    userDataDirectoryOverride() = dir;
+}
+
 juce::File AppSettings::getUserDataDirectory()
 {
+    if (userDataDirectoryOverride() != juce::File())
+        return userDataDirectoryOverride();
+
     return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile (kFolderName);
 }
 

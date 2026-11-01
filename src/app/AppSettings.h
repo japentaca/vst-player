@@ -5,7 +5,7 @@
 namespace vstplayer
 {
 
-// Persistent user settings stored in %APPDATA%\VstPlayer\settings.xml.
+// Persistent user settings stored in %APPDATA%\VstPlayer\settings.xml (or <data-dir>\settings.xml).
 class AppSettings
 {
 public:
@@ -19,8 +19,12 @@ public:
     juce::String getMainWindowState() const;
     void setMainWindowState (const juce::String& state);
 
-    // Folder that holds every per-user file of the app (%APPDATA%\VstPlayer).
+    // Folder that holds every per-user file of the app (%APPDATA%\VstPlayer), or the one given
+    // with "--data-dir <dir>" (settings.xml, plugins.xml, recent.json, autosave, scan log).
     static juce::File getUserDataDirectory();
+
+    // "--data-dir <dir>": must be called before the first AppSettings / PluginManager is created.
+    static void setUserDataDirectoryOverride (const juce::File& dir);
 
     void flush();
 

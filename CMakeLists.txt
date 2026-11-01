@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.22)
 
+# Static MSVC runtime (/MT, /MTd) for every target, JUCE included: VstPlayer.exe then runs on a
+# clean Windows 10/11 without the Visual C++ Redistributable (see tools/package.ps1).
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 project(VstPlayer VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)

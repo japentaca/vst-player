@@ -276,8 +276,10 @@ void InstanceGraph::pluginCreated (const InstanceId& id, std::unique_ptr<juce::A
 
     auto* instance = findInstance (id);
 
-    if (instance == nullptr)
-        return; // removed while loading: drop the plugin
+    // Removed while loading, or (defensive) an instance that is not waiting for this plugin:
+    // drop the plugin. A second set of nodes would stay in the graph, orphaned.
+    if (instance == nullptr || instance->state != Instance::State::loading)
+        return;
 
     if (plugin == nullptr)
     {
@@ -389,6 +391,13 @@ bool InstanceGraph::removeInstance (const InstanceId& id)
     auto removed = std::move (*it);
     instances.erase (it);
     ++editCounter;
+
+    // Forget its pending creation. Ids come from project files, so the same id can be added
+    // again right away (reopening the project that is still loading): a stale queue entry would
+    // then match the new instance and create its plugin with the old file's state.
+    creationQueue.erase (std::remove_if (creationQueue.begin(), creationQueue.end(),
+                                         [&id] (const PendingCreation& c) { return c.id == id; }),
+                         creationQueue.end());
 
     removeNodes (*removed);
     // Synchronous rebuild: once it returns the audio thread no longer renders these nodes,

@@ -30,7 +30,7 @@ public:
     bool moreThanOneInstanceAllowed() override
     {
         const auto args = getCommandLineParameterArray();
-        return cli::detectMode (args) != cli::Mode::gui || args.contains (kInstanceSelfTestFlag)
+        return cli::detectMode (args) != cli::Mode::gui || args.contains (kDataDirFlag) || args.contains (kInstanceSelfTestFlag)
                || args.contains (kMidiSelfTestFlag) || args.contains (kProjectSelfTestFlag) || args.contains (kUiSelfTestFlag) || args.contains (kApiTestFlag);
     }
 
@@ -41,6 +41,12 @@ public:
 
         if (args.contains ("--debug-to-stdout"))
             cli::installDebugOutputCapture();
+
+        // "--data-dir <dir>": every per-user file (settings, plugin list, recents, autosave) in
+        // <dir> instead of %APPDATA%\VstPlayer. A separate data folder is a separate app, so it
+        // may run next to a normal VstPlayer.
+        if (const auto dataDirArg = valueOf (args, kDataDirFlag); dataDirArg.isNotEmpty())
+            AppSettings::setUserDataDirectoryOverride (juce::File::getCurrentWorkingDirectory().getChildFile (dataDirArg));
 
         if (mode != cli::Mode::gui)
         {
@@ -111,6 +117,11 @@ public:
             mainWindow->showPluginList (args.contains ("--gui-scan"));
 
         startApi (args);
+
+        // First run (or a new --data-dir): nothing scanned yet, so no plugin can be added and
+        // every project instance would be "missing". Say what to do.
+        if (plugins->getKnownPluginList().getNumTypes() == 0)
+            mainWindow->getMainContent().setStatus (juce::String::fromUTF8 ("No hay plugins escaneados: apretá \"Plugins…\" → Escanear."));
 
         if (audioError.isNotEmpty())
         {
@@ -214,7 +225,7 @@ private:
     static juce::File findProjectArgument (const juce::StringArray& args)
     {
         static const juce::StringArray optionsWithValue { "--plugin", "--project-data-dir", "--project-test-dir", kProjectSelfTestFlag,
-                                                          "--type", "--api-port", "--api-token" };
+                                                          "--type", "--api-port", "--api-token", kDataDirFlag };
 
         for (int i = 0; i < args.size(); ++i)
         {
@@ -368,6 +379,7 @@ private:
     // no dialogs, the unsaved-changes question answers "No guardar".
     static constexpr const char* kApiTestFlag = "--api-test";
     static constexpr const char* kKeyboardVisibleKey = "keyboardVisible";
+    static constexpr const char* kDataDirFlag = "--data-dir";
 };
 
 } // namespace vstplayer

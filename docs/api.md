@@ -58,6 +58,8 @@ Por HTTP el código de estado acompaña: 200 ok; 400 `badJson`, `unknownCommand`
 503 `stopping`; 504 `timeout`. Por WebSocket llega el mismo JSON (sin código HTTP).
 JSON inválido, un mensaje que no es objeto o un comando desconocido devuelven error y la conexión
 sigue abierta.
+Un JSON con más de 64 niveles de anidamiento se rechaza como `badJson` sin parsearlo (protege la pila
+del hilo de red).
 
 `instanceId` acepta el id (UUID) de la instancia **o su nombre** visible (el primero que coincida).
 
@@ -196,12 +198,13 @@ enciende el LED de la fila (que muestra lo que llega por los puertos).
 → {"ok":true,"instances":[{"instanceId":"...","name":"Dexed","peakDb":-40.9,"blocks":12345}],"masterPeakDb":-40.9}
 {"cmd":"audioStats"}
 → {"ok":true,"sampleRate":48000.0,"bufferSize":480,"cpu":2.1,"xruns":0,"callbacks":1002,"totalCallbacks":53000,
-   "callbackAvgMs":0.21,"callbackMaxMs":1.1,"blockMs":10.0,"overBudget":0,"mixerBlocks":53000}
+   "callbackAvgMs":0.21,"callbackMaxMs":1.1,"blockMs":10.0,"overBudget":0,"graphNodes":11,"mixerBlocks":53000}
 ```
 `levels`: pico (dBFS, −100 = silencio) en el nodo de ganancia de cada instancia y en la mezcla **desde
 la consulta anterior**. `audioStats`: callbacks de audio desde la consulta anterior, tiempo medio y
 máximo del callback completo (todo el grafo), cuántos superaron la duración del bloque, xruns que
-reporta el driver (`AudioDeviceManager::getXRunCount`, −1 si no los cuenta) y CPU.
+reporta el driver (`AudioDeviceManager::getXRunCount`, −1 si no los cuenta), CPU y `graphNodes`
+(nodos del grafo de audio: 3 por instancia cargada + mezcla + salida de audio).
 
 ## Eventos (sólo WebSocket)
 

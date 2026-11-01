@@ -3,6 +3,9 @@
     Configures and builds vst-player with MSVC + Ninja.
 .PARAMETER Config
     Debug or Release (default Release). Release builds into .\build, Debug into .\build-debug.
+.PARAMETER BuildDir
+    Optional build directory (absolute or relative to the repo root) instead of the default one.
+    Used to check a from-scratch build without touching .\build (JUCE is fetched again).
 .PARAMETER Clean
     Deletes the build directory before configuring.
 #>
@@ -10,13 +13,18 @@
 param(
     [ValidateSet('Debug', 'Release')]
     [string]$Config = 'Release',
+    [string]$BuildDir = '',
     [switch]$Clean
 )
 
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
-$buildDir = if ($Config -eq 'Release') { Join-Path $root 'build' } else { Join-Path $root 'build-debug' }
+if ($BuildDir) {
+    $buildDir = if ([System.IO.Path]::IsPathRooted($BuildDir)) { $BuildDir } else { Join-Path $root $BuildDir }
+} else {
+    $buildDir = if ($Config -eq 'Release') { Join-Path $root 'build' } else { Join-Path $root 'build-debug' }
+}
 
 & (Join-Path $PSScriptRoot 'dev-env.ps1')
 
