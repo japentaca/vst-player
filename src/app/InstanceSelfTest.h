@@ -13,6 +13,7 @@ class InstanceGraph;
 class MainWindow;
 class MidiRouter;
 class PluginManager;
+class ProjectController;
 
 // GUI test hook "--instance-selftest": drives the real main window without user input and
 // quits with exit code 0 (all checks passed) or 1. Output goes to stdout (cli::print).
@@ -41,7 +42,8 @@ public:
     enum class Kind
     {
         instances, // --instance-selftest (stage 3)
-        midi       // --midi-selftest (stage 4)
+        midi,      // --midi-selftest (stage 4)
+        project    // --project-selftest <phase> (stage 5, see ProjectSelfTest.cpp)
     };
 
     InstanceSelfTest (MainWindow& window, AudioEngine& engine, PluginManager& plugins, InstanceGraph& graph,
@@ -49,6 +51,11 @@ public:
     ~InstanceSelfTest() override;
 
     void start();
+
+    // --project-selftest: phase = save | verify-cli | verify-recent | extras; testDir holds the
+    // project files and the expected fingerprint; commandLineProject = path given on the command line.
+    void setProjectTest (ProjectController& controller, const juce::String& phase, const juce::File& testDir,
+                         const juce::File& commandLineProject);
 
 private:
     struct Step
@@ -62,6 +69,8 @@ private:
     void buildSteps();
     void buildSinglePluginSteps();
     void buildMidiSteps(); // MidiSelfTest.cpp
+    void buildProjectSteps(); // ProjectSelfTest.cpp
+    static void clearProjectTestState(); // ProjectSelfTest.cpp (its vars must go before JUCE's leak detector runs)
     void finish (bool ok);
 
     // Step helpers.
@@ -77,6 +86,11 @@ private:
     MidiRouter& router;
     const Kind kind;
     const juce::String singlePluginName;
+
+    ProjectController* project = nullptr;
+    juce::String projectPhase;
+    juce::File projectTestDir;
+    juce::File projectFromCommandLine;
 
     std::vector<Step> steps;
     size_t current = 0;

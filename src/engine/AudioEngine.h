@@ -47,6 +47,13 @@ public:
     juce::AudioProcessorGraph::NodeID getMixerNodeId() const noexcept { return mixerNode->nodeID; }
     GainProcessor* getMixer() const;
 
+    // Switches to the given device type / output device / sample rate / buffer size (a project's
+    // "audio" block). Empty or zero values keep the current setting. Nothing is reopened when
+    // the device already matches. Returns the problems found (type or device not available,
+    // device that rounded the request...), one per line; empty = applied exactly.
+    juce::StringArray applyDeviceSetup (const juce::String& typeName, const juce::String& outputDevice, double sampleRate,
+                                        int bufferSize);
+
     // Writes the current device setup into settings (no-op when persistState is false).
     void saveDeviceState();
 

@@ -19,7 +19,8 @@ struct Instance
     {
         loading, // createPluginInstanceAsync in progress, no nodes yet
         ready,   // nodes in the graph
-        failed   // could not be created, see errorMessage
+        failed,  // could not be created, see errorMessage
+        missing  // from a project: the plugin is not installed / not in the plugin list
     };
 
     InstanceId id;

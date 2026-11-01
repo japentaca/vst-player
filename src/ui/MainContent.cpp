@@ -10,7 +10,7 @@ namespace vstplayer
 MainContent::MainContent (AudioEngine& e, PluginManager& p, InstanceGraph& instances, MidiRouter& router)
     : engine (e), plugins (p)
 {
-    titleLabel.setText ("Sin proyecto cargado", juce::dontSendNotification);
+    titleLabel.setText (juce::String::fromUTF8 ("Proyecto: Sin título"), juce::dontSendNotification);
     titleLabel.setFont (juce::FontOptions (18.0f));
     titleLabel.setJustificationType (juce::Justification::centredLeft);
     addAndMakeVisible (titleLabel);
@@ -80,6 +80,11 @@ void MainContent::resized()
 
     area.removeFromTop (12);
     instancePanel->setBounds (area);
+}
+
+void MainContent::setProjectInfo (const juce::String& text)
+{
+    titleLabel.setText (text, juce::dontSendNotification);
 }
 
 void MainContent::setAudioError (const juce::String& message)

@@ -70,6 +70,9 @@ public:
     // Replaces every route of that instance (empty = no MIDI input).
     void setRoutesForInstance (const InstanceId& id, std::vector<MidiRoute> instanceRoutes);
 
+    // Incremented whenever the routes change (for the "unsaved changes" flag).
+    juce::uint64 getEditCounter() const noexcept { return editCounter; }
+
     // Releases held notes, then all notes off + all sound off on every instance (collectors
     // are emptied by the instances' MidiSourceProcessor).
     void panic();
@@ -162,6 +165,7 @@ private:
 
     InstanceGraph& graph;
     std::vector<MidiRoute> routes;
+    juce::uint64 editCounter = 0;
     bool monitorAll = false;
 
     // Message thread only.

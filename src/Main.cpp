@@ -9,6 +9,7 @@
 #include "engine/InstanceGraph.h"
 #include "engine/MidiRouter.h"
 #include "engine/PluginManager.h"
+#include "project/ProjectController.h"
 
 namespace vstplayer
 {
@@ -26,7 +27,7 @@ public:
     {
         const auto args = getCommandLineParameterArray();
         return cli::detectMode (args) != cli::Mode::gui || args.contains (kInstanceSelfTestFlag)
-               || args.contains (kMidiSelfTestFlag);
+               || args.contains (kMidiSelfTestFlag) || args.contains (kProjectSelfTestFlag);
     }
 
     void initialise (const juce::String&) override
@@ -48,7 +49,8 @@ public:
 
         // The self-test changes the audio device temporarily: never persist that (nor the
         // window state).
-        isSelfTest = args.contains (kInstanceSelfTestFlag) || args.contains (kMidiSelfTestFlag);
+        isSelfTest = args.contains (kInstanceSelfTestFlag) || args.contains (kMidiSelfTestFlag)
+                     || args.contains (kProjectSelfTestFlag);
 
         plugins = std::make_unique<PluginManager> (*settings);
         audioEngine = std::make_unique<AudioEngine> (*settings, ! isSelfTest);
@@ -56,8 +58,26 @@ public:
         instanceGraph = std::make_unique<InstanceGraph> (*audioEngine, *plugins);
         midiRouter = std::make_unique<MidiRouter> (*instanceGraph);
 
+        // recent.json and the autosave: %APPDATA%\VstPlayer, or --project-data-dir <dir>. The
+        // self-tests never touch the user's files: without --project-data-dir they keep the
+        // recent list in memory and do not autosave.
+        auto dataDir = isSelfTest ? juce::File() : AppSettings::getUserDataDirectory();
+        if (const auto dirArg = valueOf (args, "--project-data-dir"); dirArg.isNotEmpty())
+            dataDir = juce::File::getCurrentWorkingDirectory().getChildFile (dirArg);
+
+        projectController = std::make_unique<ProjectController> (*audioEngine, *plugins, *instanceGraph, *midiRouter, dataDir);
+
         mainWindow = std::make_unique<MainWindow> (getApplicationName(), *settings, *audioEngine, *plugins, *instanceGraph,
-                                                   *midiRouter);
+                                                   *midiRouter, *projectController);
+
+        if (isSelfTest)
+        {
+            // Nobody is watching: no modal questions or message boxes.
+            mainWindow->suppressDialogs = true;
+            mainWindow->rememberProjectFolder = false;
+            mainWindow->onMessage = [] (const juce::String& text) { cli::print ("  [mensaje] " + text); };
+            mainWindow->savePromptOverride = [] { return MainWindow::SaveChoice::discard; };
+        }
 
         // GUI test hooks (used by the automated checks, harmless for users):
         //   --show-plugins, --gui-scan (open the plugin list and press "Escanear"),
@@ -79,13 +99,24 @@ public:
             cli::print ("Audio error: " + audioError);
         }
 
+        // "VstPlayer.exe ruta\proyecto.vstproj.json" opens that project.
+        if (const auto projectFile = findProjectArgument (args); projectFile != juce::File())
+            mainWindow->openProject (projectFile);
+
         if (isSelfTest)
         {
             const auto pluginIndex = args.indexOf ("--plugin");
             const auto singlePlugin = pluginIndex >= 0 && pluginIndex + 1 < args.size() ? args[pluginIndex + 1].unquoted() : juce::String();
-            const auto kind = args.contains (kMidiSelfTestFlag) ? InstanceSelfTest::Kind::midi : InstanceSelfTest::Kind::instances;
+            const auto kind = args.contains (kProjectSelfTestFlag) ? InstanceSelfTest::Kind::project
+                              : args.contains (kMidiSelfTestFlag)   ? InstanceSelfTest::Kind::midi
+                                                                     : InstanceSelfTest::Kind::instances;
             selfTest = std::make_unique<InstanceSelfTest> (*mainWindow, *audioEngine, *plugins, *instanceGraph, *midiRouter,
                                                            kind, singlePlugin);
+
+            if (kind == InstanceSelfTest::Kind::project)
+                selfTest->setProjectTest (*projectController, valueOf (args, kProjectSelfTestFlag),
+                                          juce::File::getCurrentWorkingDirectory().getChildFile (valueOf (args, "--project-test-dir")),
+                                          findProjectArgument (args));
             selfTest->start();
         }
     }
@@ -102,6 +133,7 @@ public:
         // MIDI router (stops writing to the instances), then the instances, then the audio
         // engine that owns the graph.
         mainWindow = nullptr;
+        projectController = nullptr;
         midiRouter = nullptr;
         instanceGraph = nullptr;
 
@@ -118,15 +150,54 @@ public:
         juce::LocalisedStrings::setCurrentMappings (nullptr);
     }
 
-    void systemRequestedQuit() override { quit(); }
-
-    void anotherInstanceStarted (const juce::String&) override
+    void systemRequestedQuit() override
     {
+        // Asks about unsaved changes first (Guardar / No guardar / Cancelar).
         if (mainWindow != nullptr)
-            mainWindow->toFront (true);
+            mainWindow->requestQuit();
+        else
+            quit();
+    }
+
+    void anotherInstanceStarted (const juce::String& commandLine) override
+    {
+        if (mainWindow == nullptr)
+            return;
+
+        mainWindow->toFront (true);
+
+        // "VstPlayer.exe proyecto.vstproj.json" while the app is already open: open it here.
+        if (const auto file = findProjectArgument (juce::StringArray::fromTokens (commandLine, true)); file != juce::File())
+            mainWindow->openProject (file);
     }
 
 private:
+    static juce::String valueOf (const juce::StringArray& args, const juce::String& flag)
+    {
+        const auto index = args.indexOf (flag);
+        return index >= 0 && index + 1 < args.size() ? args[index + 1].unquoted() : juce::String();
+    }
+
+    // First argument that is not an option (nor an option's value) and ends with ".json".
+    static juce::File findProjectArgument (const juce::StringArray& args)
+    {
+        static const juce::StringArray optionsWithValue { "--plugin", "--project-data-dir", "--project-test-dir", kProjectSelfTestFlag,
+                                                          "--type" };
+
+        for (int i = 0; i < args.size(); ++i)
+        {
+            const auto arg = args[i].unquoted().trim();
+
+            if (arg.isEmpty() || arg.startsWith ("-") || (i > 0 && optionsWithValue.contains (args[i - 1])))
+                continue;
+
+            if (arg.endsWithIgnoreCase (".json"))
+                return juce::File::getCurrentWorkingDirectory().getChildFile (arg);
+        }
+
+        return {};
+    }
+
     void runCommandLineMode (cli::Mode mode, const juce::StringArray& args)
     {
         int exitCode = 0;
@@ -181,12 +252,14 @@ private:
     std::unique_ptr<AudioEngine> audioEngine;
     std::unique_ptr<InstanceGraph> instanceGraph;
     std::unique_ptr<MidiRouter> midiRouter;
+    std::unique_ptr<ProjectController> projectController;
     std::unique_ptr<MainWindow> mainWindow;
     std::unique_ptr<InstanceSelfTest> selfTest;
     bool isSelfTest = false;
 
     static constexpr const char* kInstanceSelfTestFlag = "--instance-selftest";
     static constexpr const char* kMidiSelfTestFlag = "--midi-selftest";
+    static constexpr const char* kProjectSelfTestFlag = "--project-selftest";
 };
 
 } // namespace vstplayer

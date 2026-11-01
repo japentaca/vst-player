@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "name": "Plugin faltante",
+  "comentario": "Campo desconocido: VstPlayer lo conserva al volver a guardar.",
+  "instances": [
+    {
+      "id": "fa17a000-0000-4000-8000-000000000001",
+      "name": "Dexed",
+      "plugin": {
+        "name": "Dexed",
+        "manufacturer": "Digital Suburban",
+        "format": "VST3",
+        "fileOrIdentifier": "C:\\Program Files\\Common Files\\VST3\\Dexed.vst3",
+        "uniqueId": "d7709eec",
+        "version": "1.0.0"
+      },
+      "gainDb": -12.0,
+      "mute": false,
+      "state": "",
+      "params": { "Cutoff": 0.4 },
+      "window": { "open": false }
+    },
+    {
+      "id": "fa17a000-0000-4000-8000-000000000002",
+      "name": "Piano que no esta instalado",
+      "plugin": {
+        "name": "Pianoteq 8",
+        "manufacturer": "Modartt",
+        "format": "VST3",
+        "fileOrIdentifier": "C:\\Program Files\\Common Files\\VST3\\Pianoteq 8.vst3",
+        "uniqueId": "0badf00d",
+        "version": "8.0.0"
+      },
+      "gainDb": -6.0,
+      "mute": false,
+      "state": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "window": { "x": 200, "y": 150, "open": true },
+      "color": "#c04040"
+    }
+  ],
+  "midiRoutes": [
+    { "inputDevice": "loopMIDI Port", "channels": [1], "instanceId": "fa17a000-0000-4000-8000-000000000001", "channelMode": "keep" },
+    { "inputDevice": "loopMIDI Port", "channels": [2], "instanceId": "fa17a000-0000-4000-8000-000000000002", "channelMode": "keep" }
+  ]
+}

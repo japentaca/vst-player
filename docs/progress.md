@@ -480,3 +480,172 @@ cambiados `CMakeLists.txt`, `src/Main.cpp`, `src/app/CommandLine.{h,cpp}`, `src/
 - Con remap, dos canales de origen que tocan la misma nota se fusionan: el segundo note-on corta al
   primero (note-off agregado) y el primer note-off que llegue apaga la nota (no queda colgada, pero
   puede cortarse antes de lo que la fuente pretendía).
+
+## Etapa 5 — Proyectos (modelo y JSON)  (2026-11-01)
+**Hecho:**
+- `src/project/Project.{h,cpp}`: modelo en memoria sólo con `juce_core` (`Project`, `AudioSetup`,
+  `InstanceData`, `PluginRef`, `WindowState`, `ParamOverride`, `MidiRouteData`). Cada objeto guarda en
+  `extra` (`NamedValueSet`) las propiedades JSON que no conoce. Esquema v1 documentado en
+  **`docs/project-format.md`** (igual al del plan, con `plugin.format` agregado y `channelMode` =
+  `"keep"` o `{ "remapTo": n }`).
+- `src/project/ProjectSerializer.{h,cpp}`: `toVar/toJson`, `fromVar/fromJson` (tolerante: tipos
+  equivocados → valor por defecto + aviso; JSON inválido o raíz no-objeto → error), `loadFile`,
+  `saveFile` con **escritura atómica** (`TemporaryFile` en la misma carpeta + rename), estado en
+  **base64 estándar** (`juce::Base64`, no el formato propio de `MemoryBlock`). Campos desconocidos se
+  reescriben después de los conocidos en su orden original, en todos los niveles. Un archivo con
+  `version` mayor a 1 se abre con aviso y se vuelve a guardar con esa versión.
+- `src/project/ProjectController.{h,cpp}` (integración):
+  - `apply()`: audio primero (`AudioEngine::applyDeviceSetup`, no reabre si ya coincide; avisa si el
+    tipo/dispositivo no existe o si el dispositivo redondea el pedido), después instancias con el mismo
+    `id` del archivo (carga asíncrona; el `state` y luego los `params` por nombre se aplican en un hook
+    `prepare` **antes** de que el plugin entre al grafo), rutas MIDI, y reapertura de los editores que
+    estaban abiertos, en su posición, cuando el plugin está listo. Progreso "Cargando proyecto: N de M
+    instancias…" en la línea de proyecto.
+  - Resolución del plugin: `uniqueId` → ruta → nombre (mismo fabricante primero). Si no se encuentra:
+    instancia **faltante** (`Instance::State::missing`, fila en rojo "FALTA: …"), aviso al terminar de
+    abrir, y al guardar se reescribe tal cual (plugin, estado, params, ventana, campos desconocidos). Lo
+    mismo para un plugin que existe pero falla al cargar.
+  - `capture()`: `getStateInformation` de cada plugin, ganancia, mute, nombre, ventanas (posición actual
+    de los editores abiertos), rutas, audio actual; arrastra `extra`, `params` (actualizados al valor
+    actual) y el `extra` de cada ruta.
+  - "Cambios sin guardar": contadores de edición de `InstanceGraph` (agregar, quitar, renombrar,
+    ganancia, mute) y `MidiRouter` (rutas) + `AudioProcessorListener` en cada plugin (cambios de
+    parámetro, de programa o de estado no-parámetro). Se ignoran las notificaciones de los 2.5 s
+    posteriores a una carga (los plugins las emiten solos al restaurar estado). Abrir/cerrar/mover un
+    editor no marca cambios (la posición se toma al guardar).
+  - `recent.json` (máx. 10, el más reciente primero) y **autoguardado** cada 2 min si hay cambios en
+    `autosave.vstproj.json` (no cambia el archivo ni el `*`; se borra al guardar).
+- `InstanceGraph`: `addInstance (desc, AddOptions)` (id, nombre, ganancia, mute, ventana, `prepare`),
+  `addMissingInstance`, `getEditCounter()`. `MidiRouter::getEditCounter()`. `AudioEngine::applyDeviceSetup`.
+  `InstancePanel::syncEditorWindowStates`, `closeAllEditors`, fila faltante en rojo, `RowInfo` con el
+  texto de estado. `MainContent::setProjectInfo` (línea superior "Proyecto: nombre *  (ruta) — progreso").
+- `MainWindow`: Archivo → **Nuevo, Abrir…, Guardar, Guardar como…, Recientes ▸** (+ "Limpiar la lista"),
+  Plugins…, Salir. Título "VstPlayer — nombre" con " *" si hay cambios. Nuevo / Abrir / Recientes /
+  Salir / botón de cierre preguntan "Cambios sin guardar" (Guardar / No guardar / Cancelar, async; Guardar
+  en un proyecto sin archivo abre "Guardar como"). Errores y avisos de carga en `AlertWindow` async.
+  Recuerda la última carpeta de proyectos en settings (no en modo prueba).
+- `Main.cpp`: **`VstPlayer.exe ruta\proyecto.vstproj.json`** abre ese proyecto (primer argumento que no
+  es opción y termina en `.json`); si la app ya está abierta, la segunda invocación se lo pasa a la
+  primera (`anotherInstanceStarted`). `systemRequestedQuit` pasa por la pregunta de cambios.
+  `--project-data-dir <dir>`: carpeta alternativa para `recent.json` y el autoguardado. En los
+  self-tests sin esa opción no se escribe ninguno de los dos, no hay diálogos modales (los mensajes van
+  a stdout) y la pregunta de cambios se responde "No guardar" sola.
+- Tests:
+  - `tests/ProjectRoundTripTest.cpp` → ejecutable `ProjectRoundTripTest` (consola, sólo `juce_core`)
+    registrado en **ctest** (`project_roundtrip`): round-trip de un proyecto sintético (texto idéntico,
+    estado binario de 100 KB byte a byte, unicode, comillas y barras), campos desconocidos de una
+    "versión 3" en todos los niveles, lectura tolerante y errores, archivos (carpeta nueva, sobrescritura
+    sin temporales sobrantes, LF) y los dos proyectos de `examples/`.
+  - Self-test `--project-selftest <fase>` (`src/app/ProjectSelfTest.cpp`) y **`tools/run-project-test.ps1`**,
+    que corre 4 procesos seguidos (cada uno por `run-gui-test.ps1`, o sea con control de aserciones y
+    fugas) en una carpeta temporal con su propio `--project-data-dir`:
+    1. `save`: carga Dexed, Surge XT y sforzando por la ruta de la UI; Dexed → programa 5 ("Lavitar Y") y
+       3 parámetros; Surge XT → 3 parámetros (macros M1–M3); sforzando → estado nuevo con
+       `globalTuning=7` y **un instrumento SFZ cargado** (`seno-de-prueba.sfz`, `sample=*sine`): el estado
+       de sforzando es un XML `AriaSave` comprimido con zlib dentro del chunk VST3, y agregándole
+       `<Slot id="0" name="ruta.sfz"/>` sforzando carga el SFZ (verificado: suena, entre −11 y −15 dBFS según la corrida). Ganancias
+       −30 / −31.5 / −33 dB, nombre "Pads Surge", rutas (Dexed ← loopMIDI canal 1 keep y canal 10;
+       Surge ← canales 2,3 remapTo 1 por los métodos de la fila; sforzando ← "Puerto MIDI Fantasma"),
+       nivel de una nota A4 en cada una, mute de sforzando, editor de Dexed abierto en (140,160), el de
+       Surge movido a (260,210) y cerrado. "Guardar como" `prueba` → `prueba.vstproj.json` (105 KB) y una
+       huella con todo lo observable.
+    2. `verify-cli`: `VstPlayer.exe <dir>\prueba.vstproj.json …` (camino de la línea de comandos).
+    3. `verify-recent`: arranca vacío y abre Recientes[0] (leído de `recent.json`) con el mismo método
+       que el menú.
+    4. `extras`: proyecto derivado con un plugin inexistente, campos desconocidos en todos los niveles,
+       `version: 2`, un override `params` y un parámetro inexistente.
+- `examples/prueba-etapa5.vstproj.json` (Dexed canal 1, Surge XT canales 2-3 → 1, sforzando canal 4,
+  sin estado), `examples/plugin-faltante.vstproj.json` (Dexed + "Pianoteq 8" que no está instalado +
+  campos desconocidos) y `examples/sfz/seno.sfz` (SFZ mínimo con ondas generadas por sforzando).
+
+**Archivos:** nuevos `src/project/Project.{h,cpp}`, `src/project/ProjectSerializer.{h,cpp}`,
+`src/project/ProjectController.{h,cpp}`, `src/project/RecentProjects.{h,cpp}`, `src/app/ProjectSelfTest.cpp`,
+`tests/ProjectRoundTripTest.cpp`, `tools/run-project-test.ps1`, `docs/project-format.md`,
+`examples/prueba-etapa5.vstproj.json`, `examples/plugin-faltante.vstproj.json`, `examples/sfz/seno.sfz`;
+cambiados `CMakeLists.txt`, `src/Main.cpp`, `src/app/MainWindow.{h,cpp}`, `src/app/InstanceSelfTest.{h,cpp}`,
+`src/engine/Instance.h`, `src/engine/InstanceGraph.{h,cpp}`, `src/engine/MidiRouter.{h,cpp}`,
+`src/engine/AudioEngine.{h,cpp}`, `src/ui/InstancePanel.{h,cpp}`, `src/ui/MainContent.{h,cpp}`, `docs/progress.md`.
+
+**Verificación:**
+- `pwsh -NoProfile -File .\tools\build.ps1` y `-Config Debug` → OK, sin warnings en nuestro código.
+- `ctest --test-dir build` y `ctest --test-dir build-debug` (con el entorno de `tools\dev-env.ps1`) →
+  `100% tests passed` (`ProjectRoundTripTest`: **106/106 comprobaciones**).
+- `pwsh -NoProfile -File .\tools\run-project-test.ps1` (Release) → **PRUEBA DE PROYECTOS: OK**, 37 s, las
+  4 fases con exit 0. Resultados al reabrir (igual por línea de comandos y por Recientes):
+  - mismos ids, nombres, ganancias, mute, audio (Windows Audio / Altavoces (Focusrite USB Audio) /
+    48000 / 480) y rutas (las 4, con keep / remapTo y el puerto inexistente);
+  - **getStateInformation idéntico byte a byte** en Dexed (8344 bytes) y sforzando (758 bytes, con el
+    SFZ cargado y `globalTuning=7`); Surge XT: 69508 vs 69509 bytes (Surge reescribe su XML) pero sus
+    **2855 parámetros** iguales (tolerancia 1e-4); Dexed: 2238 parámetros iguales y programa 5
+    "Lavitar  Y"; los 6 parámetros cambiados conservan el valor guardado;
+  - **mismo nivel de audio** con una nota A4 en cada instancia: Dexed −52.1, Surge XT −45.4, sforzando
+    −44.0 dBFS, idénticos a los medidos antes de guardar;
+  - editor de Dexed reabierto solo en (140,160); Surge cerrado con su posición (260,210) guardada;
+  - título "VstPlayer — prueba" sin `*` y sin cambios tras abrir; única advertencia: el puerto
+    "Puerto MIDI Fantasma" que no existe; mover un parámetro de Surge (misma notificación que su editor)
+    pone el `*`.
+  - fase `extras`: abre con 4 instancias, la faltante "Instrumento desinstalado" en la lista con
+    `State::missing`, fila en rojo "PluginQueNoExiste — FALTA: …", aviso mostrado (en modo prueba va a
+    stdout); el override `params` de Dexed ("Cutoff" = 0.25) se aplica sobre el estado; cambio de
+    ganancia → `*`; autoguardado (intervalo bajado a 1 s) escrito en la carpeta de datos alternativa sin
+    tocar el archivo ni el `*`; "Cambios sin guardar" → Cancelar no hace nada; "Guardar como" borra el
+    autoguardado; en el archivo re-guardado siguen idénticos el bloque `plugin` de la faltante, su
+    `state`, `params`, `window` (con `"monitor": 2`), `effects`, los campos `futureField`,
+    `audio.clockSource`, `color`, `plugin.sha256`, `velocityCurve` de la ruta y `version: 2`; "Cambios sin
+    guardar" → Guardar escribe el archivo (Dexed −12.25 dB) antes de "Nuevo"; un archivo JSON roto da
+    error y deja el proyecto anterior.
+- Lo mismo en Debug (`run-project-test.ps1 -Config Debug -AllowedLeaks VST3HostContextHeadless,AsyncUpdater`)
+  → OK, **0 aserciones de JUCE**, sólo la fuga conocida de sforzando (etapa 3).
+- Proyectos de ejemplo abiertos en la app (`VstPlayer.exe examples\X.vstproj.json --project-selftest open
+  --project-test-dir <tmp>`): `prueba-etapa5` → 3 instancias cargadas, 3 rutas, sin avisos;
+  `plugin-faltante` → Dexed cargado + "Piano que no esta instalado (Pianoteq 8): FALTA", aviso.
+- Tests de etapas anteriores, sin cambios: `run-gui-test.ps1` (instancias) Release OK y Debug OK (fuga
+  conocida); `-AppArgs '--midi-selftest'` Release OK (49.5 s) y Debug OK, 0 fugas.
+- `%APPDATA%\VstPlayer` después de todo: sólo `plugin-scan.log`, `plugins.xml` y `settings.xml` (este
+  último sin modificar); ni `recent.json` ni autoguardado de prueba. Carpetas temporales borradas.
+
+**Pendiente / problemas:**
+- **Verificación manual pendiente (usuario)**, con `build\VstPlayer_artefacts\Release\VstPlayer.exe` y
+  loopMIDI corriendo:
+  1. Archivo → Abrir… → `examples\prueba-etapa5.vstproj.json`. Se cargan Dexed, "Pads" (Surge XT) y
+     "Sampler" (sforzando); el título dice "VstPlayer — Prueba etapa 5".
+  2. "Editor" de Dexed: elegir otro preset (otro cartucho/programa). "Editor" de Pads: cargar otro patch
+     de Surge XT. "Editor" de Sampler: cargar un `.sfz` (cualquiera, o arrastrar
+     `examples\sfz\seno.sfz`). Dejar abierto, por ejemplo, el editor de Dexed en algún lugar de la
+     pantalla. Tocar cada uno con el teclado virtual (o desde carrilion: canal 1 Dexed, 2-3 Pads, 4 Sampler)
+     y recordar cómo suenan. El título muestra `*`.
+  3. Archivo → Guardar como… → por ejemplo `Documentos\mi-prueba.vstproj.json`. El `*` desaparece.
+  4. Cerrar la app (botón de cierre). Volver a abrirla: arranca vacía ("Sin título").
+  5. Archivo → Recientes → 1. `…\mi-prueba.vstproj.json`. Sin tocar nada: mismos presets/patch/SFZ,
+     mismas ganancias y rutas (fila MIDI de cada instancia), editor de Dexed abierto donde estaba, y
+     suena igual. El título no tiene `*`.
+  6. Cambiar una ganancia → aparece `*`; cerrar → pregunta "Cambios sin guardar"; "Cancelar" deja la app
+     abierta.
+  7. Archivo → Abrir… → `examples\plugin-faltante.vstproj.json` → aviso "Falta el plugin Pianoteq 8…" y
+     esa fila en rojo; Guardar como… otro archivo y comprobar con un editor de texto que la instancia de
+     Pianoteq, su `state` y `"color"` / `"comentario"` siguen ahí.
+  8. Opcional: `build\VstPlayer_artefacts\Release\VstPlayer.exe "C:\…\mi-prueba.vstproj.json"` desde una
+     consola abre ese proyecto directamente.
+- **Caché de parámetros del host (JUCE VST3)**: cuando un plugin cambia sus propios parámetros sin
+  avisarle al host (Dexed al cambiar de programa, sforzando al cargar un instrumento), los valores que
+  devuelve `AudioProcessorParameter::getValue()` del lado del host quedan viejos hasta el siguiente
+  `setStateInformation`. No afecta lo que se guarda ni cómo suena (el estado del plugin es la fuente), pero
+  el test sincroniza esa caché (reaplicando a cada plugin su propio estado) antes de tomar la huella, y
+  un override `params` de un parámetro así se guardaría con el valor viejo. Relevante para la etapa 7
+  (`listParams`). sforzando además reporta a veces valores fuera de 0..1 en un macro (p. ej. 120); el test
+  los informa y no los compara.
+- sforzando sin instrumento cargado no guarda nada de sus 512 macros (dependen del instrumento). El SFZ
+  cargado desde su propia interfaz queda como verificación manual (paso 2); por programa se cargó con un
+  estado armado a mano (ver fase `save`).
+- La ruta del SFZ dentro del estado de sforzando es absoluta: un proyecto con sforzando apunta a esa ruta
+  en disco (comportamiento del plugin, no del formato).
+- Surge XT devuelve un estado que difiere en 1 byte después de restaurarlo (los parámetros y el nivel son
+  iguales); por eso la comparación byte a byte es informativa para Surge.
+- No hay recuperación automática del autoguardado al arrancar: se abre a mano desde
+  `%APPDATA%\VstPlayer\autosave.vstproj.json` (documentado en `docs/project-format.md`).
+- "Cambios sin guardar" se basa en contadores: cambiar algo y volver al valor anterior también deja el `*`.
+- La invocación `VstPlayer.exe proyecto.json` con la app ya abierta (`anotherInstanceStarted`) no tiene
+  test automático. Asociar la extensión queda para la etapa 8. Atajos de teclado (Ctrl+S, etc.) quedan para
+  la etapa 6.
+- Observación lateral: `plugins.xml` se reescribe (mismo contenido) en cada salida de la app, también en
+  los self-tests (comportamiento de `PluginManager` desde la etapa 2).

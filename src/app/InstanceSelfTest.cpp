@@ -55,13 +55,18 @@ InstanceSelfTest::~InstanceSelfTest()
 {
     stopTimer();
     state() = TestState();
+    clearProjectTestState();
 }
 
 void InstanceSelfTest::start()
 {
-    cli::print (kind == Kind::midi ? "VstPlayer --midi-selftest" : "VstPlayer --instance-selftest");
+    cli::print (kind == Kind::midi      ? juce::String ("VstPlayer --midi-selftest")
+                : kind == Kind::project ? "VstPlayer --project-selftest " + projectPhase
+                                        : juce::String ("VstPlayer --instance-selftest"));
     cli::print (engine.describeDevice());
-    if (kind == Kind::midi)
+    if (kind == Kind::project)
+        buildProjectSteps();
+    else if (kind == Kind::midi)
         buildMidiSteps();
     else if (singlePluginName.isNotEmpty())
         buildSinglePluginSteps();

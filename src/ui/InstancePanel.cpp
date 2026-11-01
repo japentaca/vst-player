@@ -20,6 +20,7 @@ juce::String describeState (const Instance& instance)
     {
         case Instance::State::loading: return instance.description.name + juce::String::fromUTF8 (" — cargando…");
         case Instance::State::failed:  return instance.description.name + juce::String::fromUTF8 (" — ERROR: ") + instance.errorMessage;
+        case Instance::State::missing: return instance.description.name + juce::String::fromUTF8 (" — FALTA: ") + instance.errorMessage;
         case Instance::State::ready:   break;
     }
 
@@ -187,6 +188,8 @@ public:
     }
 
     int getLedFlashes() const noexcept { return flashes; }
+    juce::String getStateText() const { return stateLabel.getText(); }
+    bool isShownAsMissing() const noexcept { return missingPlugin; }
     juce::String getPortText() const { return portBox.getText(); }
     juce::String getChannelsText() const { return channelsButton.getButtonText(); }
     juce::String getModeText() const { return modeBox.getText(); }
@@ -197,8 +200,14 @@ public:
             nameLabel.setText (instance.name, juce::dontSendNotification);
 
         stateLabel.setText (describeState (instance), juce::dontSendNotification);
-        stateLabel.setColour (juce::Label::textColourId,
-                              instance.state == Instance::State::failed ? juce::Colours::orangered : juce::Colours::lightgrey);
+        const auto isProblem = instance.state == Instance::State::failed || instance.state == Instance::State::missing;
+        stateLabel.setColour (juce::Label::textColourId, isProblem ? juce::Colours::orangered : juce::Colours::lightgrey);
+
+        if (missingPlugin != (instance.state == Instance::State::missing))
+        {
+            missingPlugin = ! missingPlugin;
+            repaint();
+        }
 
         gainSlider.setValue (instance.gainDb, juce::dontSendNotification);
         muteButton.setToggleState (instance.mute, juce::dontSendNotification);
@@ -222,8 +231,15 @@ public:
     void paint (juce::Graphics& g) override
     {
         auto bounds = getLocalBounds().reduced (0, 1).toFloat();
-        g.setColour (selected ? juce::Colour (0xff2d4f6e) : juce::Colour (0xff2a2a2a));
+        g.setColour (missingPlugin ? juce::Colour (0xff5a1e1e) : selected ? juce::Colour (0xff2d4f6e) : juce::Colour (0xff2a2a2a));
         g.fillRoundedRectangle (bounds, 4.0f);
+
+        if (missingPlugin)
+        {
+            // Plugin not installed: the row stays (its state is kept in the project) in red.
+            g.setColour (juce::Colours::red);
+            g.drawRoundedRectangle (bounds.reduced (0.5f), 4.0f, 1.0f);
+        }
 
         if (selected)
         {
@@ -264,6 +280,7 @@ private:
     InstancePanel& owner;
     const InstanceId id;
     bool selected = false;
+    bool missingPlugin = false;
 
     juce::Label nameLabel;
     juce::Label stateLabel;
@@ -530,6 +547,24 @@ void InstancePanel::closeEditor (const InstanceId& id)
     window = nullptr;
 }
 
+void InstancePanel::syncEditorWindowStates()
+{
+    for (auto& [id, window] : editorWindows)
+    {
+        Instance::EditorWindowState state;
+        state.open = true;
+        state.hasPosition = true;
+        state.position = window->getPosition();
+        graph.setEditorWindowState (id, state);
+    }
+}
+
+void InstancePanel::closeAllEditors()
+{
+    while (! editorWindows.empty())
+        closeEditor (editorWindows.begin()->first);
+}
+
 PluginEditorWindow* InstancePanel::getEditorWindow (const InstanceId& id) const
 {
     const auto it = editorWindows.find (id);
@@ -569,7 +604,7 @@ void InstancePanel::instanceAboutToBeRemoved (const Instance& instance)
 
 void InstancePanel::instanceLoadFinished (const Instance& instance)
 {
-    if (instance.state == Instance::State::failed)
+    if (instance.state == Instance::State::failed || instance.state == Instance::State::missing)
     {
         setStatus (instance.errorMessage, true);
         return;
@@ -680,6 +715,8 @@ InstancePanel::RowInfo InstancePanel::getRowInfo (const InstanceId& id) const
             info.channels = row->getChannelsText();
             info.mode = row->getModeText();
             info.ledFlashes = row->getLedFlashes();
+            info.stateText = row->getStateText();
+            info.shownAsMissing = row->isShownAsMissing();
         }
     }
 

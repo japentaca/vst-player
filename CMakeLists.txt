@@ -26,12 +26,17 @@ target_sources(VstPlayer PRIVATE
     src/app/CommandLine.cpp
     src/app/InstanceSelfTest.cpp
     src/app/MidiSelfTest.cpp
+    src/app/ProjectSelfTest.cpp
     src/app/ProcessTools.cpp
     src/app/Translations.cpp
     src/engine/AudioEngine.cpp
     src/engine/InstanceGraph.cpp
     src/engine/MidiRouter.cpp
     src/engine/PluginManager.cpp
+    src/project/Project.cpp
+    src/project/ProjectController.cpp
+    src/project/ProjectSerializer.cpp
+    src/project/RecentProjects.cpp
     src/ui/InstancePanel.cpp
     src/ui/MainContent.cpp
     src/ui/MidiPortsWindow.cpp
@@ -74,3 +79,31 @@ target_link_libraries(VstPlayer
         juce::juce_recommended_lto_flags)
 
 vstplayer_set_msvc_flags(VstPlayer)
+
+# Tests (ctest): round-trip of the project model / JSON serializer. juce_core only.
+enable_testing()
+
+juce_add_console_app(ProjectRoundTripTest PRODUCT_NAME "ProjectRoundTripTest")
+
+target_sources(ProjectRoundTripTest PRIVATE
+    tests/ProjectRoundTripTest.cpp
+    src/project/Project.cpp
+    src/project/ProjectSerializer.cpp)
+
+target_include_directories(ProjectRoundTripTest PRIVATE src)
+
+target_compile_definitions(ProjectRoundTripTest PRIVATE
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_STANDALONE_APPLICATION=1
+    VSTPLAYER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+
+target_link_libraries(ProjectRoundTripTest
+    PRIVATE
+        juce::juce_core
+    PUBLIC
+        juce::juce_recommended_config_flags)
+
+vstplayer_set_msvc_flags(ProjectRoundTripTest)
+
+add_test(NAME project_roundtrip COMMAND ProjectRoundTripTest)

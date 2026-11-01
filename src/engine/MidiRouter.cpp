@@ -73,6 +73,7 @@ void MidiRouter::setRoutes (std::vector<MidiRoute> newRoutes)
     }
 
     routes = std::move (newRoutes);
+    ++editCounter;
     refreshDevices();
 }
 
@@ -105,6 +106,8 @@ void MidiRouter::setRoutesForInstance (const InstanceId& id, std::vector<MidiRou
 
     for (auto& route : instanceRoutes)
         routes.push_back (route);
+
+    ++editCounter;
 
     refreshDevices();
 }

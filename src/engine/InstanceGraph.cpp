@@ -50,16 +50,31 @@ InstanceGraph::~InstanceGraph()
 
 InstanceId InstanceGraph::addInstance (const juce::PluginDescription& description)
 {
-    JUCE_ASSERT_MESSAGE_THREAD
+    return addInstance (description, AddOptions {});
+}
 
+Instance& InstanceGraph::createEntry (const juce::PluginDescription& description, const AddOptions& options)
+{
     auto instance = std::make_unique<Instance>();
-    instance->id = juce::Uuid().toDashedString();
-    instance->name = makeUniqueName (description.name);
+    instance->id = options.id.isNotEmpty() && findInstance (options.id) == nullptr ? options.id : juce::Uuid().toDashedString();
+    instance->name = makeUniqueName (options.name.trim().isNotEmpty() ? options.name.trim() : description.name);
     instance->description = description;
     instance->state = Instance::State::loading;
+    instance->gainDb = juce::jlimit (GainProcessor::kMinGainDb, GainProcessor::kMaxGainDb, options.gainDb);
+    instance->mute = options.mute;
+    instance->window = options.window;
+    instance->window.open = false; // only true while an editor window exists
 
-    const auto id = instance->id;
     instances.push_back (std::move (instance));
+    ++editCounter;
+    return *instances.back();
+}
+
+InstanceId InstanceGraph::addInstance (const juce::PluginDescription& description, AddOptions options)
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
+    const auto id = createEntry (description, options).id;
     listeners.call ([] (Listener& l) { l.instanceListChanged(); });
 
     const auto sampleRate = engine.getSampleRate() > 0.0 ? engine.getSampleRate() : kFallbackSampleRate;
@@ -69,18 +84,33 @@ InstanceId InstanceGraph::addInstance (const juce::PluginDescription& descriptio
 
     plugins.getFormatManager().createPluginInstanceAsync (
         description, sampleRate, bufferSize,
-        [weakThis, id] (std::unique_ptr<juce::AudioPluginInstance> plugin, const juce::String& error)
+        [weakThis, id, prepare = std::move (options.prepare)] (std::unique_ptr<juce::AudioPluginInstance> plugin,
+                                                               const juce::String& error)
         {
             if (auto* self = weakThis.get())
-                self->pluginCreated (id, std::move (plugin), error);
+                self->pluginCreated (id, std::move (plugin), error, prepare);
             // Otherwise the graph is gone and the plugin is destroyed here, on the message thread.
         });
 
     return id;
 }
 
+InstanceId InstanceGraph::addMissingInstance (const juce::PluginDescription& description, const AddOptions& options,
+                                              const juce::String& message)
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
+    auto& instance = createEntry (description, options);
+    instance.state = Instance::State::missing;
+    instance.errorMessage = message;
+    const auto id = instance.id;
+
+    listeners.call ([] (Listener& l) { l.instanceListChanged(); });
+    return id;
+}
+
 void InstanceGraph::pluginCreated (const InstanceId& id, std::unique_ptr<juce::AudioPluginInstance> plugin,
-                                   const juce::String& error)
+                                   const juce::String& error, const std::function<void (juce::AudioPluginInstance&)>& prepare)
 {
     JUCE_ASSERT_MESSAGE_THREAD
 
@@ -100,6 +130,9 @@ void InstanceGraph::pluginCreated (const InstanceId& id, std::unique_ptr<juce::A
     {
         // Only the main buses: extra outputs (multi-out instruments) and sidechains are off.
         plugin->disableNonMainBuses();
+
+        if (prepare)
+            prepare (*plugin);
 
         const auto acceptsMidi = plugin->acceptsMidi();
         const auto numOutputs = plugin->getTotalNumOutputChannels();
@@ -195,6 +228,7 @@ bool InstanceGraph::removeInstance (const InstanceId& id)
 
     auto removed = std::move (*it);
     instances.erase (it);
+    ++editCounter;
 
     removeNodes (*removed);
     // Synchronous rebuild: once it returns the audio thread no longer renders these nodes,
@@ -240,7 +274,13 @@ void InstanceGraph::setName (const InstanceId& id, const juce::String& newName)
     if (auto* instance = findInstance (id))
     {
         const auto trimmed = newName.trim();
-        instance->name = trimmed.isNotEmpty() ? trimmed : instance->description.name;
+        const auto resolvedName = trimmed.isNotEmpty() ? trimmed : instance->description.name;
+
+        if (resolvedName == instance->name)
+            return;
+
+        instance->name = resolvedName;
+        ++editCounter;
         listeners.call ([] (Listener& l) { l.instanceListChanged(); });
     }
 }
@@ -249,7 +289,12 @@ void InstanceGraph::setGainDb (const InstanceId& id, float gainDb)
 {
     if (auto* instance = findInstance (id))
     {
-        instance->gainDb = juce::jlimit (GainProcessor::kMinGainDb, GainProcessor::kMaxGainDb, gainDb);
+        const auto newGain = juce::jlimit (GainProcessor::kMinGainDb, GainProcessor::kMaxGainDb, gainDb);
+
+        if (newGain != instance->gainDb)
+            ++editCounter;
+
+        instance->gainDb = newGain;
 
         if (auto* gain = instance->getGainProcessor())
             gain->setGainDb (instance->gainDb);
@@ -260,6 +305,9 @@ void InstanceGraph::setMute (const InstanceId& id, bool shouldMute)
 {
     if (auto* instance = findInstance (id))
     {
+        if (instance->mute != shouldMute)
+            ++editCounter;
+
         instance->mute = shouldMute;
 
         if (auto* gain = instance->getGainProcessor())

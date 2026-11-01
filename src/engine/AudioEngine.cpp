@@ -137,6 +137,90 @@ juce::String AudioEngine::describeDevice() const
            + " - latencia de salida " + juce::String (latencyMs, 1) + " ms";
 }
 
+juce::StringArray AudioEngine::applyDeviceSetup (const juce::String& typeName, const juce::String& outputDevice,
+                                                 double sampleRate, int bufferSize)
+{
+    juce::StringArray problems;
+
+    auto targetType = deviceManager.getCurrentAudioDeviceType();
+    juce::AudioIODeviceType* type = deviceManager.getCurrentDeviceTypeObject();
+
+    if (typeName.isNotEmpty() && typeName != targetType)
+    {
+        juce::AudioIODeviceType* found = nullptr;
+
+        for (auto* t : deviceManager.getAvailableDeviceTypes())
+            if (t->getTypeName() == typeName)
+                found = t;
+
+        if (found != nullptr)
+        {
+            targetType = typeName;
+            type = found;
+        }
+        else
+        {
+            problems.add (juce::String::fromUTF8 ("El tipo de audio \"") + typeName
+                          + juce::String::fromUTF8 ("\" no está disponible; se usa \"") + targetType + "\".");
+        }
+    }
+
+    juce::String targetDevice;
+
+    if (outputDevice.isNotEmpty() && type != nullptr)
+    {
+        type->scanForDevices();
+
+        if (type->getDeviceNames (false).contains (outputDevice))
+            targetDevice = outputDevice;
+        else
+            problems.add (juce::String::fromUTF8 ("El dispositivo de salida \"") + outputDevice
+                          + juce::String::fromUTF8 ("\" no está conectado; se usa el actual o el predeterminado."));
+    }
+
+    const auto typeDiffers = targetType != deviceManager.getCurrentAudioDeviceType();
+    const auto deviceDiffers = targetDevice.isNotEmpty() && targetDevice != getDeviceName();
+    const auto rateDiffers = sampleRate > 0.0 && std::abs (sampleRate - getSampleRate()) > 0.5;
+    const auto bufferDiffers = bufferSize > 0 && bufferSize != getBufferSize();
+
+    if (! (typeDiffers || deviceDiffers || rateDiffers || bufferDiffers || deviceManager.getCurrentAudioDevice() == nullptr))
+        return problems;
+
+    if (typeDiffers)
+        deviceManager.setCurrentAudioDeviceType (targetType, true);
+
+    auto setup = deviceManager.getAudioDeviceSetup();
+
+    if (targetDevice.isNotEmpty())
+        setup.outputDeviceName = targetDevice;
+
+    if (sampleRate > 0.0)
+        setup.sampleRate = sampleRate;
+
+    if (bufferSize > 0)
+        setup.bufferSize = bufferSize;
+
+    setup.useDefaultOutputChannels = true;
+
+    if (const auto error = deviceManager.setAudioDeviceSetup (setup, true); error.isNotEmpty())
+        problems.add ("Audio: " + error);
+
+    if (deviceManager.getCurrentAudioDevice() == nullptr)
+    {
+        problems.add (juce::String::fromUTF8 ("No se pudo abrir el dispositivo de audio del proyecto."));
+    }
+    else
+    {
+        if (sampleRate > 0.0 && std::abs (sampleRate - getSampleRate()) > 0.5)
+            problems.add ("El dispositivo usa " + juce::String (getSampleRate(), 0) + " Hz en lugar de " + juce::String (sampleRate, 0) + " Hz.");
+
+        if (bufferSize > 0 && bufferSize != getBufferSize())
+            problems.add ("El dispositivo usa un buffer de " + juce::String (getBufferSize()) + " en lugar de " + juce::String (bufferSize) + ".");
+    }
+
+    return problems;
+}
+
 void AudioEngine::setTestToneEnabled (bool shouldBeEnabled)
 {
     if (auto* tone = getToneGenerator())

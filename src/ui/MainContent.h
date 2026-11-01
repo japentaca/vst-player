@@ -25,6 +25,9 @@ public:
 
     // Last audio device error (empty clears it). Cleared automatically when the device changes.
     void setAudioError (const juce::String& message);
+    // Top line: project name (with "*" if modified) and loading progress (stage 5).
+    void setProjectInfo (const juce::String& text);
+    juce::String getProjectInfo() const { return titleLabel.getText(); }
 
     InstancePanel& getInstancePanel() noexcept { return *instancePanel; }
 

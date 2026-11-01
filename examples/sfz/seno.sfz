@@ -1,0 +1,5 @@
+// SFZ minimo para probar sforzando sin bajar librerias: ondas generadas por el propio sforzando.
+// Teclas hasta C4 (60): seno; desde C#4: diente de sierra suave.
+<group> ampeg_attack=0.005 ampeg_release=0.4 volume=-6
+<region> sample=*sine lokey=0 hikey=60 pitch_keycenter=69
+<region> sample=*saw lokey=61 hikey=127 pitch_keycenter=69 volume=-12

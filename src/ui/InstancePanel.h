@@ -42,6 +42,10 @@ public:
     bool openEditor (const InstanceId& id);
     void closeEditor (const InstanceId& id);
     PluginEditorWindow* getEditorWindow (const InstanceId& id) const;
+    // Copies the position of every open editor window into its instance (before saving).
+    void syncEditorWindowStates();
+    // Closes every editor (their positions are kept in the instances).
+    void closeAllEditors();
     void selectInstance (const InstanceId& id);
     InstanceId getSelectedInstance() const { return selectedId; }
     juce::MidiKeyboardState& getKeyboardState() noexcept { return keyboardState; }
@@ -59,6 +63,8 @@ public:
         bool exists = false;
         juce::String port, channels, mode;
         int ledFlashes = 0; // times the activity LED lit up
+        juce::String stateText; // plugin / state line
+        bool shownAsMissing = false; // red row (plugin not installed)
     };
 
     RowInfo getRowInfo (const InstanceId& id) const;
