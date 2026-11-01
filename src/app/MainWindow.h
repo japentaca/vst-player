@@ -6,19 +6,28 @@ namespace vstplayer
 {
 
 class AppSettings;
+class AudioEngine;
+class PluginManager;
+class PluginListWindow;
 
-// Main application window: menu bar (Archivo, Audio, Ayuda) and an empty content area.
+// Main application window: menu bar (Archivo, Audio, Ayuda) and the provisional content.
 class MainWindow final : public juce::DocumentWindow,
                          private juce::MenuBarModel
 {
 public:
-    MainWindow (const juce::String& title, AppSettings& settings);
+    MainWindow (const juce::String& title, AppSettings& settings, AudioEngine& engine, PluginManager& plugins);
     ~MainWindow() override;
 
     void closeButtonPressed() override;
 
     // Writes the current size/position into the settings (does not flush to disk).
     void saveWindowState();
+
+    void showAudioSettings();
+    // Shows an audio device error in the status area (non-modal).
+    void setAudioError (const juce::String& message);
+    // Opens the plugin list window; startScan = also press "Escanear".
+    void showPluginList (bool startScan = false);
 
 private:
     enum MenuIndex
@@ -31,7 +40,9 @@ private:
     enum CommandId
     {
         cmdQuit = 1,
-        cmdAbout
+        cmdAbout,
+        cmdPlugins,
+        cmdAudioSettings
     };
 
     // MenuBarModel
@@ -42,6 +53,11 @@ private:
     void showAboutBox();
 
     AppSettings& settings;
+    AudioEngine& engine;
+    PluginManager& plugins;
+
+    std::unique_ptr<PluginListWindow> pluginListWindow;
+    juce::Component::SafePointer<juce::DialogWindow> audioSettingsWindow;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainWindow)
 };

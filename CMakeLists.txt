@@ -22,7 +22,13 @@ juce_add_gui_app(VstPlayer
 target_sources(VstPlayer PRIVATE
     src/Main.cpp
     src/app/MainWindow.cpp
-    src/app/AppSettings.cpp)
+    src/app/AppSettings.cpp
+    src/app/CommandLine.cpp
+    src/app/Translations.cpp
+    src/engine/AudioEngine.cpp
+    src/engine/PluginManager.cpp
+    src/ui/MainContent.cpp
+    src/ui/PluginListWindow.cpp)
 
 target_include_directories(VstPlayer PRIVATE src)
 
