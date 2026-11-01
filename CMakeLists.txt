@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(VstPlayer VERSION 0.1.0 LANGUAGES CXX)
+project(VstPlayer VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,5 +10,53 @@ if(NOT MSVC)
     message(FATAL_ERROR "vst-player requires MSVC (Visual Studio 2022 Build Tools). Run tools/build.ps1.")
 endif()
 
-add_executable(VstPlayer src/Main.cpp)
-target_compile_options(VstPlayer PRIVATE /W4 /permissive- /utf-8)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(juce)
+include(msvc-flags)
+
+juce_add_gui_app(VstPlayer
+    PRODUCT_NAME "VstPlayer"
+    COMPANY_NAME "Jape"
+    VERSION ${PROJECT_VERSION})
+
+target_sources(VstPlayer PRIVATE
+    src/Main.cpp
+    src/app/MainWindow.cpp
+    src/app/AppSettings.cpp)
+
+target_include_directories(VstPlayer PRIVATE src)
+
+target_compile_definitions(VstPlayer PRIVATE
+    JUCE_PLUGINHOST_VST3=1
+    JUCE_PLUGINHOST_VST=0
+    JUCE_PLUGINHOST_AU=0
+    JUCE_PLUGINHOST_LADSPA=0
+    JUCE_PLUGINHOST_LV2=0
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_DISPLAY_SPLASH_SCREEN=0
+    JUCE_REPORT_APP_USAGE=0
+    JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:VstPlayer,JUCE_PRODUCT_NAME>"
+    JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:VstPlayer,JUCE_VERSION>")
+
+# Optional ASIO support: only if the Steinberg ASIO SDK was dropped into third_party/asiosdk.
+set(VSTPLAYER_ASIOSDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/asiosdk")
+if(EXISTS "${VSTPLAYER_ASIOSDK_DIR}/common/iasiodrv.h")
+    message(STATUS "ASIO SDK found: enabling JUCE_ASIO")
+    target_compile_definitions(VstPlayer PRIVATE JUCE_ASIO=1)
+    target_include_directories(VstPlayer PRIVATE "${VSTPLAYER_ASIOSDK_DIR}/common")
+else()
+    message(STATUS "ASIO SDK not found in third_party/asiosdk: ASIO disabled (WASAPI only)")
+endif()
+
+target_link_libraries(VstPlayer
+    PRIVATE
+        juce::juce_gui_extra
+        juce::juce_audio_utils
+        juce::juce_audio_processors
+        juce::juce_audio_devices
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_lto_flags)
+
+vstplayer_set_msvc_flags(VstPlayer)

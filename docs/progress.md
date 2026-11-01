@@ -41,3 +41,56 @@ Cada subagente agrega una sección al final con este formato:
 
 **Pendiente / problemas:** ninguno. Nota: los scripts de `tools/` están en ASCII para que
 también funcionen en Windows PowerShell 5.1, aunque se probaron con pwsh 7.
+
+## Etapa 1 — Esqueleto JUCE  (2026-11-01)
+**Hecho:**
+- `cmake/juce.cmake`: `FetchContent` de JUCE con **tag `8.0.15`** (el 8.0.x más reciente según
+  `git ls-remote --tags` el 2026-11-01), `GIT_SHALLOW TRUE`. Tag en la caché `VSTPLAYER_JUCE_TAG`.
+- `cmake/msvc-flags.cmake`: `vstplayer_set_msvc_flags()` → `/W4 /permissive- /utf-8 /MP` (sin `/WX`).
+- `CMakeLists.txt`: `juce_add_gui_app(VstPlayer PRODUCT_NAME "VstPlayer" COMPANY_NAME "Jape")`,
+  módulos `juce_gui_extra`, `juce_audio_utils`, `juce_audio_processors`, `juce_audio_devices`,
+  definiciones `JUCE_PLUGINHOST_VST3=1`, `VST=0`, `AU=0`, `LADSPA=0` (y además `LV2=0`),
+  `JUCE_WEB_BROWSER=0`, `JUCE_USE_CURL=0`, `JUCE_DISPLAY_SPLASH_SCREEN=0`, `JUCE_REPORT_APP_USAGE=0`.
+  ASIO: si existe `third_party/asiosdk/common/iasiodrv.h` define `JUCE_ASIO=1` y agrega el include;
+  hoy no está, el configure informa "ASIO disabled (WASAPI only)". Se agregó `C` a `LANGUAGES`
+  (JUCE compila fuentes `.c`).
+- `src/Main.cpp`: `VstPlayerApplication` (`JUCEApplication`), instancia única; en `shutdown()`
+  guarda el estado de la ventana y hace `flush` de settings (cubre todas las vías de cierre).
+- `src/app/MainWindow.{h,cpp}`: `DocumentWindow` con barra de título nativa, redimensionable
+  (mín. 640x400, default 1024x640 centrada) y `MenuBarModel` con menús **Archivo** (Salir),
+  **Audio** (ítem deshabilitado "(sin opciones todavía)") y **Ayuda** (Acerca de, con versión).
+  Contenido vacío con el texto "Sin proyecto cargado".
+- `src/app/AppSettings.{h,cpp}`: `juce::PropertiesFile` en `%APPDATA%\VstPlayer\settings.xml`
+  (XML), clave `mainWindowState` con `getWindowStateAsString()` / `restoreWindowStateFromString()`.
+  `AppSettings::getUserDataDirectory()` para los archivos de etapas siguientes.
+
+**Archivos:** `CMakeLists.txt`, `cmake/juce.cmake`, `cmake/msvc-flags.cmake`, `src/Main.cpp`,
+`src/app/MainWindow.h`, `src/app/MainWindow.cpp`, `src/app/AppSettings.h`, `src/app/AppSettings.cpp`,
+`docs/progress.md`.
+
+**Verificación:**
+- `pwsh -NoProfile -File .\tools\build.ps1` (primera vez, incluye clonar JUCE y compilar todos los
+  módulos): **165,4 s** → `build\VstPlayer_artefacts\Release\VstPlayer.exe`. Recompilación
+  incremental tras cambiar un .cpp: 61 s (dominada por el link con LTCG).
+- `.\tools\build.ps1 -Config Debug`: 123,5 s → `build-debug\VstPlayer_artefacts\Debug\VstPlayer.exe`.
+- Sin warnings en nuestro código (se corrigió un C4390 por `DBG` vacío en Release). Único aviso:
+  JUCE 8 informa que `JUCE_DISPLAY_SPLASH_SCREEN` se ignora (ya no tiene splash); se deja la
+  definición porque la pide el plan.
+- GUI por programa (script PowerShell con `Start-Process`, Win32 `GetWindowRect`/`SetWindowPos`,
+  `CloseMainWindow()` + `WaitForExit`):
+  - Antes no existía `%APPDATA%\VstPlayer`. Run 1: ventana con título "VstPlayer" aparece
+    (1038x678 exterior, centrada); se movió/redimensionó a 150,120 900x560; `CloseMainWindow()` →
+    el proceso termina solo, **exit code 0**. `settings.xml` queda con
+    `<VALUE name="mainWindowState" val="158 150 886 522"/>`.
+  - Runs 2–4: la ventana reabre en **151,120 900x559**: el tamaño se recuerda exacto y la
+    posición es estable (sin deriva entre ejecuciones); hay 1 px de diferencia en X respecto de lo
+    pedido, atribuible al redondeo de escalado DPI de JUCE (el monitor principal está escalado).
+    Todas las salidas con exit code 0.
+  - Lo mismo con el build Debug: exit code 0 en todos los cierres, es decir, ningún `jassert` ni
+    el detector de fugas de JUCE se disparó (sin depurador, eso habría terminado el proceso con
+    una excepción de breakpoint).
+
+**Pendiente / problemas:**
+- Verificación manual pendiente: abrir los menús Archivo / Audio / Ayuda con el mouse, usar
+  "Acerca de" y "Salir" (no se automatizó la interacción con menús).
+- Desfase de 1 px en X al restaurar la posición (cosmético, no acumulativo).
