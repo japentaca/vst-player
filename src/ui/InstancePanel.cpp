@@ -137,15 +137,17 @@ public:
 
         addAndMakeVisible (led);
 
-        portBox.setTooltip ("Puerto de entrada MIDI");
+        portBox.setTooltip (portTooltip());
         portBox.onChange = [this]
         {
             const auto selected = portBox.getSelectedId();
 
-            if (selected == 1)
+            if (selected == kNoRouteItem)
+                owner.removeInstanceMidiRoute (id);
+            else if (selected == kNoPortItem)
                 owner.setInstanceMidiPort (id, {});
-            else if (juce::isPositiveAndBelow (selected - 2, portItems.size()))
-                owner.setInstanceMidiPort (id, portItems[selected - 2]);
+            else if (juce::isPositiveAndBelow (selected - kFirstPortItem, portItems.size()))
+                owner.setInstanceMidiPort (id, portItems[selected - kFirstPortItem]);
         };
         addAndMakeVisible (portBox);
 
@@ -178,21 +180,28 @@ public:
         if (missing)
             items.add (current);
 
-        if (items != portItems || missing != portMissing)
+        if (items != portItems || missing != portMissing || portBox.getNumItems() == 0)
         {
             portItems = items;
             portMissing = missing;
             portBox.clear (juce::dontSendNotification);
-            portBox.addItem ("(sin entrada MIDI)", 1);
+            portBox.addItem (juce::String::fromUTF8 (kNoRouteText), kNoRouteItem);
+            portBox.addItem (juce::String::fromUTF8 (kNoPortText), kNoPortItem);
+
+            if (! portItems.isEmpty())
+                portBox.addSeparator();
 
             for (int i = 0; i < portItems.size(); ++i)
-                portBox.addItem (portItems[i] + (missing && i == portItems.size() - 1 ? " (desconectado)" : ""), i + 2);
+                portBox.addItem (portItems[i] + (missing && i == portItems.size() - 1 ? " (desconectado)" : ""), i + kFirstPortItem);
         }
 
-        portBox.setSelectedId (route != nullptr ? portItems.indexOf (current) + 2 : 1, juce::dontSendNotification);
-        const auto portOk = route == nullptr || router.isPortOpen (current);
+        const auto selectedItem = route == nullptr       ? kNoRouteItem
+                                  : ! route->hasPort() ? kNoPortItem
+                                                       : portItems.indexOf (current) + kFirstPortItem;
+        portBox.setSelectedId (selectedItem, juce::dontSendNotification);
+        const auto portOk = route == nullptr || ! route->hasPort() || router.isPortOpen (current);
         portBox.setColour (juce::ComboBox::textColourId, portOk ? theme::text : theme::error);
-        portBox.setTooltip (portOk ? juce::String ("Puerto de entrada MIDI")
+        portBox.setTooltip (portOk ? portTooltip()
                                    : juce::String::fromUTF8 ("El puerto no está disponible: se reabre solo cuando vuelva"));
 
         channelsButton.setButtonText ("Canales: " + (route != nullptr ? MidiRoute::describeChannels (route->channelMask) : juce::String ("-")));
@@ -357,6 +366,22 @@ private:
     juce::ComboBox modeBox;
     juce::StringArray portItems;
     bool portMissing = false;
+
+    // portBox item ids (ports from kFirstPortItem on, in portItems order).
+    static constexpr int kNoRouteItem = 1;
+    static constexpr int kNoPortItem = 2;
+    static constexpr int kFirstPortItem = 3;
+
+    static juce::String portTooltip()
+    {
+        return juce::String::fromUTF8 ("Entrada MIDI de esta instancia:\n"
+                                       "- (no recibe MIDI): sin ruta; sólo el teclado virtual.\n"
+                                       "- Sin puerto (sólo API / carrilion): toca lo que manda carrilion (salida VstPlayer), "
+                                       "la API o --render por los canales elegidos. No hace falta loopMIDI ni un teclado MIDI; "
+                                       "no escucha ningún puerto.\n"
+                                       "- Un puerto (p. ej. loopMIDI Port): el MIDI que llega por ese puerto (y también "
+                                       "lo de carrilion / la API por esos canales).");
+    }
     juce::int64 lastActivity = 0;
     double lastActivityMs = -1.0e9;
     int flashes = 0;
@@ -526,6 +551,10 @@ InstanceId InstancePanel::addInstance (const juce::PluginDescription& descriptio
 {
     setStatus (juce::String::fromUTF8 ("Cargando ") + description.name + juce::String::fromUTF8 ("…"), false);
     const auto id = graph.addInstance (description);
+
+    // Usable right away with no MIDI device: a route with no port on the first free channel.
+    if (id.isNotEmpty())
+        setInstanceMidiPort (id, {});
 
     // The new row is the keyboard target and is scrolled into view.
     selectInstance (id);
@@ -825,21 +854,34 @@ void InstancePanel::updateInstanceRoute (const InstanceId& id, const std::functi
     router.setRoutesForInstance (id, routes);
 }
 
+int InstancePanel::firstFreeChannel (const std::vector<MidiRoute>& routes)
+{
+    juce::uint16 used = 0;
+
+    for (auto& route : routes)
+        used = (juce::uint16) (used | route.channelMask);
+
+    for (int channel = 1; channel <= 16; ++channel)
+        if ((used & (1u << (channel - 1))) == 0)
+            return channel;
+
+    return 1;
+}
+
+void InstancePanel::removeInstanceMidiRoute (const InstanceId& id)
+{
+    router.setRoutesForInstance (id, {});
+}
+
 void InstancePanel::setInstanceMidiPort (const InstanceId& id, const juce::String& portName)
 {
-    if (portName.isEmpty())
-    {
-        router.setRoutesForInstance (id, {});
-        return;
-    }
-
     auto routes = router.getRoutesForInstance (id);
 
     if (routes.empty())
     {
         MidiRoute route;
         route.instanceId = id;
-        route.channelMask = MidiRoute::kAllChannels;
+        route.channelMask = (juce::uint16) (1u << (firstFreeChannel (router.getRoutes()) - 1));
         route.remapChannel = 0;
         routes.push_back (route);
     }

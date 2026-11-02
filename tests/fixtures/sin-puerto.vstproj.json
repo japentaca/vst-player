@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "name": "Sin puerto",
+  "instances": [
+    {
+      "id": "5e0b0001-0000-4000-8000-000000000001",
+      "name": "Piano",
+      "plugin": {
+        "name": "Dexed",
+        "manufacturer": "Digital Suburban",
+        "format": "VST3",
+        "fileOrIdentifier": "C:\Program Files\Common Files\VST3\Dexed.vst3",
+        "uniqueId": "d7709eec",
+        "version": "1.0.0"
+      },
+      "gainDb": -12.0,
+      "mute": false,
+      "state": "",
+      "window": { "open": false }
+    },
+    {
+      "id": "5e0b0001-0000-4000-8000-000000000002",
+      "name": "Bajo",
+      "plugin": {
+        "name": "Dexed",
+        "manufacturer": "Digital Suburban",
+        "format": "VST3",
+        "fileOrIdentifier": "C:\Program Files\Common Files\VST3\Dexed.vst3",
+        "uniqueId": "d7709eec",
+        "version": "1.0.0"
+      },
+      "gainDb": -12.0,
+      "mute": false,
+      "state": "",
+      "window": { "open": false }
+    }
+  ],
+  "midiRoutes": [
+    { "inputDevice": "", "channels": [1], "instanceId": "5e0b0001-0000-4000-8000-000000000001", "channelMode": "keep" },
+    { "inputDevice": "", "channels": [2, 3], "instanceId": "5e0b0001-0000-4000-8000-000000000002", "channelMode": { "remapTo": 1 } }
+  ]
+}

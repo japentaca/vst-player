@@ -5,7 +5,9 @@
 //   node tools/api-test.mjs --port 9479 [--token T] --fixtures <dir> --tmp <dir>
 //
 // <dir> of --fixtures is tests/fixtures: test projects of their own (prueba-etapa5 with its three
-// stage-5 instances, plugin-faltante), independent of the editable examples/.
+// stage-5 instances, plugin-faltante, sin-puerto with routes that have no port), independent of
+// the editable examples/. If ../carrilion is next to this repo, its VstPlayer output
+// (apps/web/lib/core/vstplayer-port.js) plays the routes with no port.
 //
 // Exit code 0 = every check passed. Prints one line per check plus the measurements.
 
@@ -531,6 +533,107 @@ async function main() {
     const http1 = await client.httpRequest({ cmd: 'status' }, base, token);
     check(http1.ok, 'carrilion-client: httpRequest()');
     vp.close();
+
+    //--------------------------------------------------------------------------
+    // Routes with no port (tests/fixtures/sin-puerto: Piano <- ch 1 keep, Bajo <- ch 2, 3 remapTo 1,
+    // both "inputDevice": ""): what a carrilion user with no MIDI device sets up. status lists
+    // them, carrilion's VstPlayer output (route_table) plays them, and `midi` without instanceId
+    // routes inside VstPlayer.
+    {
+        r = await http({ cmd: 'loadProject', path: examplesDir + sep + 'sin-puerto.vstproj.json', discardChanges: true });
+        check(r.json.ok && r.json.instances.length === 2 && r.json.instances.every((i) => i.state === 'ready'), 'loadProject sin-puerto (2 Dexed, rutas sin puerto)',
+            (r.json.instances || []).map((i) => i.name + ':' + i.state).join(', '));
+        check(Array.isArray(r.json.warnings) ? r.json.warnings.length === 0 : true, 'sin-puerto: sin avisos (una ruta sin puerto no es un puerto faltante)', JSON.stringify(r.json.warnings));
+        // Saved elsewhere right away: the final saveProject must not write into tests/fixtures.
+        const noPortSaved = tmpDir + sep + 'api-sin-puerto.vstproj.json';
+        r = await http({ cmd: 'saveProject', path: noPortSaved });
+        check(r.json.ok, 'sin-puerto guardado en la carpeta temporal');
+        const savedRoutes = JSON.parse((await import('node:fs')).readFileSync(noPortSaved, 'utf8')).midiRoutes;
+        check(savedRoutes.length === 2 && savedRoutes.every((x) => x.inputDevice === ''), 'el archivo guardado conserva "inputDevice": "" en las dos rutas', JSON.stringify(savedRoutes.map((x) => x.inputDevice)));
+
+        r = await http({ cmd: 'status' });
+        const st = r.json;
+        const byName = Object.fromEntries(st.instances.map((i) => [i.name, i]));
+        const piano = byName['Piano'], bajo = byName['Bajo'];
+        check(st.midiRoutes.length === 2 && st.midiRoutes.every((x) => x.inputDevice === ''), 'status.midiRoutes: 2 rutas con "inputDevice": ""',
+            JSON.stringify(st.midiRoutes.map((x) => [x.inputDevice, x.channels, x.channelMode])));
+        check(piano.midiRoutes.length === 1 && piano.midiRoutes[0].channels.join() === '1' && piano.midiRoutes[0].channelMode === 'keep'
+            && bajo.midiRoutes[0].channels.join() === '2,3' && bajo.midiRoutes[0].channelMode.remapTo === 1,
+            'status: rutas por instancia (Piano canal 1 keep, Bajo canales 2,3 remapTo 1)');
+        for (const i of [piano, bajo]) await http({ cmd: 'setGain', instanceId: i.id, gainDb: -30 });
+
+        // carrilion's own module when the sibling repo is there (the real client), else a copy of
+        // its route_table rule: every route counts, whatever its device.
+        const fsm = await import('node:fs');
+        const carrilionModule = new URL('../../carrilion/apps/web/lib/core/vstplayer-port.js', import.meta.url);
+        let carrilion = null;
+        if (fsm.existsSync(carrilionModule)) {
+            try { carrilion = await import(carrilionModule.href); } catch (e) { console.log('  (no se pudo importar el puerto de carrilion: ' + e.message + ')'); }
+        }
+        let cport = null, statusText = '';
+        if (carrilion) {
+            let routesRead = null;
+            const routesReady = new Promise((res) => { routesRead = res; });
+            cport = carrilion.create_vstplayer_port({ url: `ws://127.0.0.1:${port}/ws${q}`, on_status: (t) => { statusText = t; }, on_routes: () => routesRead() });
+            await Promise.race([routesReady, sleep(5000)]);
+            check(/1→Piano/.test(statusText) && /2→Bajo:1/.test(statusText) && /3→Bajo:1/.test(statusText),
+                'puerto VstPlayer de carrilion (vstplayer-port.js): lee las rutas sin puerto', statusText);
+        } else {
+            console.log('  (sin ../carrilion: se usa una copia de route_table)');
+            const table = [];
+            for (let ch = 0; ch <= 16; ch++) table.push([]);
+            for (const route of st.midiRoutes) {
+                const remap = route.channelMode && typeof route.channelMode === 'object' ? Number(route.channelMode.remapTo) : 0;
+                const sources = route.channels.length ? route.channels : [...Array(16).keys()].map((k) => k + 1);
+                for (const src of sources) table[src].push({ id: route.instanceId, out: remap >= 1 && remap <= 16 ? remap : src });
+            }
+            const sendTo = (ch, statusNibble, d1, d2) => table[ch].forEach((t) => ws2send(t.id, [statusNibble | (t.out - 1), d1, d2]));
+            const ws2send = (id, bytes) => http({ cmd: 'midi', instanceId: id, bytes });
+            cport = { on: (ch, n, v) => sendTo(ch, 0x90, n, v), off: (ch, n) => sendTo(ch, 0x80, n, 0), close() { } };
+            check(table[1].length === 1 && table[3][0]?.out === 1, 'copia de route_table: canal 1 -> Piano, canal 3 -> Bajo por el canal 1');
+        }
+
+        async function peaksAfter(play, ms = 450) {
+            await http({ cmd: 'levels' });
+            await play();
+            await sleep(ms);
+            const lvl = (await http({ cmd: 'levels' })).json;
+            const peak = (id) => lvl.instances.find((i) => i.instanceId === id).peakDb;
+            return { piano: peak(piano.id), bajo: peak(bajo.id) };
+        }
+        async function quiet() {
+            await http({ cmd: 'panic' });
+            await sleep(500);
+        }
+
+        let pk = await peaksAfter(async () => cport.on(1, 60, 100, 0));
+        check(pk.piano > -80 && pk.bajo < -90, 'carrilion, canal 1 -> suena Piano (y no Bajo)', `Piano ${pk.piano.toFixed(1)}, Bajo ${pk.bajo.toFixed(1)} dBFS`);
+        cport.off(1, 60, 0);
+        await quiet();
+        pk = await peaksAfter(async () => cport.on(3, 48, 100, 0));
+        check(pk.bajo > -80 && pk.piano < -90, 'carrilion, canal 3 -> suena Bajo (remapTo 1) (y no Piano)', `Piano ${pk.piano.toFixed(1)}, Bajo ${pk.bajo.toFixed(1)} dBFS`);
+        cport.off(3, 48, 0);
+        cport.close();
+        await quiet();
+
+        // `midi` without instanceId: VstPlayer applies the routes itself.
+        let routedReply = null;
+        const ws3 = await new Client(`ws://127.0.0.1:${port}/ws${q}`).open(); // `ws` was closed above
+        pk = await peaksAfter(async () => { routedReply = await ws3.send({ cmd: 'midi', bytes: [0x92, 50, 100] }); });
+        ws3.close();
+        check(routedReply.ok && routedReply.routed === 1 && routedReply.messages === 1 && !('instanceId' in routedReply),
+            'midi sin instanceId (WebSocket): ruteado por VstPlayer, 1 entrega', JSON.stringify(routedReply));
+        check(pk.bajo > -80 && pk.piano < -90, 'midi sin instanceId, canal 3 -> suena Bajo', `Piano ${pk.piano.toFixed(1)}, Bajo ${pk.bajo.toFixed(1)} dBFS`);
+        r = await http({ cmd: 'midi', bytes: [0x82, 50, 0] });
+        check(r.json.ok && r.json.routed === 1, 'midi sin instanceId (HTTP): note-off ruteado');
+        await quiet();
+        r = await http({ cmd: 'midi', bytes: [0x94, 60, 100, 0x84, 60, 0] });
+        check(r.json.ok && r.json.routed === 0 && r.json.messages === 2, 'midi sin instanceId por un canal sin ruta: routed 0', JSON.stringify(r.json));
+        r = await http({ cmd: 'midi', instanceId: '', bytes: [0x90, 60, 100] });
+        check(r.status === 400 && r.json.code === 'badRequest', 'midi con instanceId vacío: 400 (para rutear, omitirlo)');
+        r = await http({ cmd: 'midi', bytes: [0xf8] });
+        check(r.status === 400 && r.json.code === 'badMidi', 'midi sin instanceId con un mensaje de sistema: 400 badMidi');
+    }
 
     // Leave a clean, unmodified project so the app closes without questions.
     await http({ cmd: 'saveProject' });

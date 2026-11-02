@@ -108,6 +108,10 @@ ctest --test-dir build ; ctest --test-dir build-debug                       # ro
 
 - El grafo, el router MIDI y el proyecto se modifican **sólo en el hilo de mensajes**. Parámetros
   (`setValueNotifyingHost`) y MIDI (`MidiMessageCollector`) pueden venir de cualquier hilo.
+- Rutas MIDI: `inputDevice` vacío = ruta **sin puerto** (ningún puerto llega por ella; la usan
+  carrilion, `midi` sin `instanceId` → `MidiRouter::routeMidi` y `--render`, que cuentan todas las
+  rutas). Las instancias nuevas de la UI reciben una en el primer canal libre; abrir un proyecto no
+  agrega rutas.
 - Quitar una instancia: `instanceAboutToBeRemoved` avisa primero (la UI cierra el editor, el router y
   la API sacan sus punteros bajo lock) y recién después se quitan los nodos.
 - Los VST3 se crean en el hilo de mensajes (restricción de JUCE/VST3): cola de a uno, DLL precargado en

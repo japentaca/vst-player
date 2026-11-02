@@ -60,6 +60,7 @@ MidiRouter::~MidiRouter()
 
     const juce::ScopedLock sl (lock);
     dispatch.clear();
+    everyRouteDispatch.clear();
     targets.clear();
 }
 
@@ -157,7 +158,7 @@ std::vector<MidiRouter::PortStatus> MidiRouter::getPortStatus() const
     }
 
     for (auto& route : routes)
-        if (route.inputDevice.isNotEmpty())
+        if (route.hasPort())
             ++findOrAdd (route.inputDevice).numRoutes;
 
     for (auto& port : openPorts)
@@ -232,7 +233,7 @@ void MidiRouter::refreshDevices()
     juce::StringArray wanted;
 
     for (auto& route : routes)
-        if (route.inputDevice.isNotEmpty())
+        if (route.hasPort())
             wanted.addIfNotAlreadyThere (route.inputDevice);
 
     if (monitorAll)
@@ -316,7 +317,7 @@ void MidiRouter::closePort (const juce::String& name)
     juce::StringArray affected;
 
     for (auto& route : routes)
-        if (route.inputDevice == name)
+        if (route.hasPort() && route.inputDevice == name)
             affected.addIfNotAlreadyThere (route.instanceId);
 
     {
@@ -342,7 +343,7 @@ void MidiRouter::timerCallback()
     // Retry ports that exist but could not be opened.
     if (! needsRefresh)
         for (auto& route : routes)
-            if (route.inputDevice.isNotEmpty() && ! isPortOpen (route.inputDevice))
+            if (route.hasPort() && ! isPortOpen (route.inputDevice))
                 for (auto& device : devices)
                     if (device.name == route.inputDevice)
                         needsRefresh = true;
@@ -383,6 +384,7 @@ void MidiRouter::syncTargets (const InstanceId& excluded)
 void MidiRouter::rebuildDispatch()
 {
     std::map<juce::MidiInput*, std::vector<DispatchEntry>> table;
+    std::vector<DispatchEntry> everyRoute;
 
     const juce::ScopedLock sl (lock);
 
@@ -393,12 +395,20 @@ void MidiRouter::rebuildDispatch()
         if (target == targets.end() || route.channelMask == 0)
             continue;
 
+        const DispatchEntry entry { route.channelMask, route.isKeep() ? 0 : route.remapChannel, target->second.get() };
+        everyRoute.push_back (entry);
+
+        // A route with no port never takes MIDI from a port.
+        if (! route.hasPort())
+            continue;
+
         for (auto& port : openPorts)
             if (port->name == route.inputDevice)
-                table[port->input.get()].push_back ({ route.channelMask, route.isKeep() ? 0 : route.remapChannel, target->second.get() });
+                table[port->input.get()].push_back (entry);
     }
 
     dispatch.swap (table);
+    everyRouteDispatch.swap (everyRoute);
 }
 
 void MidiRouter::releaseHeldLocked (Target& target)
@@ -494,6 +504,44 @@ void MidiRouter::handleIncomingMidiMessage (juce::MidiInput* source, const juce:
     }
 
     addLog (device, message, numTargets, dropped);
+}
+
+int MidiRouter::routeMidi (const juce::MidiMessage& source)
+{
+    // Stamped now: the collector would do it anyway, and the log shows the time.
+    const auto message = source.withTimeStamp (juce::Time::getMillisecondCounterHiRes() * 0.001);
+    const auto* raw = message.getRawData();
+    const auto status = message.getRawDataSize() > 0 ? raw[0] : 0;
+    const auto dropped = status < 0x80 || status >= 0xf0;
+    int numTargets = 0;
+
+    if (! dropped)
+    {
+        const juce::ScopedLock sl (lock);
+        const auto channel = message.getChannel();
+        std::vector<std::pair<Target*, int>> delivered; // one copy per instance and output channel (as carrilion)
+
+        for (auto& entry : everyRouteDispatch)
+        {
+            if ((entry.channelMask & (1u << (channel - 1))) == 0)
+                continue;
+
+            const auto outChannel = entry.remapChannel != 0 ? entry.remapChannel : channel;
+            const std::pair<Target*, int> key { entry.target, outChannel };
+
+            if (std::find (delivered.begin(), delivered.end(), key) != delivered.end())
+                continue;
+
+            delivered.push_back (key);
+            auto out = message;
+            out.setChannel (outChannel);
+            deliverLocked (*entry.target, out);
+            ++numTargets;
+        }
+    }
+
+    addLog (kApiSourceName, message, numTargets, dropped);
+    return numTargets;
 }
 
 void MidiRouter::deliverLocked (Target& target, const juce::MidiMessage& message)

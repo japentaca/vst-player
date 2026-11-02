@@ -16,9 +16,15 @@ namespace vstplayer
 
 // One MIDI route: messages from inputDevice on any of `channels` go to the instance.
 // remapChannel 0 = "keep" (the original channel passes through), 1..16 = "remapTo: n".
+//
+// An empty inputDevice is a route with no port: no MIDI input port reaches the instance through
+// it, but it still says "this instance takes channel n" for whoever applies the routes without a
+// port: MidiRouter::routeMidi (API `midi` without instanceId), carrilion's VstPlayer output
+// (reads `status.midiRoutes`) and the offline render. Lets a user with no MIDI device at all
+// (no loopMIDI) set up routes.
 struct MidiRoute
 {
-    juce::String inputDevice; // port name as reported by MidiInput::getAvailableDevices()
+    juce::String inputDevice; // port name as reported by MidiInput::getAvailableDevices(); empty = no port
     juce::uint16 channelMask = 0xffff; // bit (n - 1) = channel n
     InstanceId instanceId;
     int remapChannel = 0;
@@ -27,6 +33,7 @@ struct MidiRoute
 
     bool hasChannel (int channel) const noexcept { return channel >= 1 && channel <= 16 && (channelMask & (1u << (channel - 1))) != 0; }
     bool isKeep() const noexcept { return remapChannel < 1 || remapChannel > 16; }
+    bool hasPort() const noexcept { return inputDevice.isNotEmpty(); }
 
     // "todos", "ninguno" or "1, 2, 5" (Spanish, UI text).
     static juce::String describeChannels (juce::uint16 mask);
@@ -78,6 +85,17 @@ public:
     // Releases held notes, then all notes off + all sound off on every instance (collectors
     // are emptied by the instances' MidiSourceProcessor).
     void panic();
+
+    // Delivers a message through every route, whatever its input device (with or without a
+    // port): the same rule as carrilion's VstPlayer output and the offline render (one copy per
+    // instance and output channel, even if two routes of an instance take the channel).
+    // Channel voice messages only (others are dropped). Held notes are tracked as for the ports,
+    // the row LED lights and the diagnostic log shows it with kApiSourceName as the device.
+    // Returns the number of deliveries (0 = no route takes that channel). Any thread (the API
+    // calls it from its network threads).
+    int routeMidi (const juce::MidiMessage& message);
+
+    static constexpr const char* kApiSourceName = "(API)";
 
     //==============================================================================
     struct PortStatus
@@ -182,6 +200,7 @@ private:
     juce::CriticalSection lock;
     std::map<InstanceId, std::unique_ptr<Target>> targets;
     std::map<juce::MidiInput*, std::vector<DispatchEntry>> dispatch;
+    std::vector<DispatchEntry> everyRouteDispatch; // routeMidi(): every route, port or not
     std::map<juce::MidiInput*, juce::String> sourceNames;
     std::map<juce::String, juce::int64> receivedByPort;
 

@@ -29,7 +29,15 @@ van primero porque afectan el uso diario.
   DirectSound baja a 128 pero con ritmo irregular. La salida real es **ASIO** (ver abajo).
 - `setProgram` justo después de un `listParams` con `refresh` a veces no se aplica en Dexed (causa
   no investigada).
-- MIDI recibido por la API no enciende el LED de la fila ni pasa por las rutas.
+- `midi` **con** `instanceId` no pasa por las rutas ni enciende el LED de la fila (sin `instanceId`
+  sí: ver `docs/api.md`). La salida "VstPlayer" de carrilion todavía aplica las rutas ella misma (una
+  copia por instancia, lee `status.midiRoutes` cada 5 s); podría pasar a `midi` sin `instanceId` y
+  dejar de seguir las rutas (un cambio de ruta en VstPlayer valdría al instante). Su `route_table` lee
+  `"channels": []` como "todos los canales"; VstPlayer ya no lista esas rutas en `status`, pero
+  convendría que carrilion las tome como "ningún canal".
+- Rutas: no hay una semántica "cualquier puerto" (una ruta que tome el MIDI de todos los puertos
+  abiertos). Se eligió "sin puerto" para las rutas que no dependen de un dispositivo; si hace falta
+  tocar desde cualquier teclado sin elegirlo, agregarla como otra opción del selector.
 - No hay UI para el puerto/token de la API ni para recuperar el autoguardado (se edita
   `settings.xml` / se abre `autosave.vstproj.json` a mano).
 - La UI edita una sola ruta MIDI por instancia (el modelo y el formato admiten varias).

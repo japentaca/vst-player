@@ -91,6 +91,11 @@ Project makeSyntheticProject()
     r2.remapTo = 1;
     p.midiRoutes.push_back (r2);
 
+    MidiRouteData r3; // no port: API / carrilion / --render only
+    r3.channels = { 5 };
+    r3.instanceId = b.id;
+    p.midiRoutes.push_back (r3);
+
     return p;
 }
 
@@ -169,6 +174,8 @@ void testSyntheticRoundTrip()
     check (root["midiRoutes"][0]["channelMode"].toString() == "keep", "channelMode keep");
     check ((int) root["midiRoutes"][1]["channelMode"]["remapTo"] == 1, "channelMode { remapTo: 1 }");
     check (root["midiRoutes"][1]["channels"].size() == 3 && (int) root["midiRoutes"][1]["channels"][2] == 16, "channels [3, 4, 16]");
+    check (root["midiRoutes"][2]["inputDevice"].isString() && root["midiRoutes"][2]["inputDevice"].toString().isEmpty(),
+           "ruta sin puerto: \"inputDevice\": \"\" (texto vacio, lo que lee una version vieja)");
     check (! root["instances"][1]["window"].hasProperty ("x"), "ventana sin posicion no escribe x/y");
     check (! root["instances"][1].hasProperty ("params"), "params vacio no se escribe");
     check ((double) root["instances"][0]["params"]["Cutoff"] == 0.5, "params.Cutoff");
@@ -257,6 +264,23 @@ void testTolerantReading()
     check (p.midiRoutes[1].remapTo == 0, "channelMode desconocido -> keep");
     check (warnings.size() == 4, "advertencias: " + juce::String (warnings.size()) + " -> " + warnings.joinIntoString (" | "));
     check (! serializer::toJson (p).contains ("\"audio\""), "sin audio no escribe audio");
+
+    // Route with no port: "inputDevice" "", missing or null, all without warnings; written as "".
+    warnings.clear();
+    check (serializer::fromJson (R"({ "midiRoutes": [ { "inputDevice": "", "instanceId": "x", "channels": [1] },
+                                                     { "instanceId": "x", "channels": [2] },
+                                                     { "inputDevice": null, "instanceId": "x", "channels": [3] } ] })",
+                                 p, &warnings)
+               .wasOk(),
+           "rutas sin puerto se leen");
+    check (p.midiRoutes.size() == 3 && p.midiRoutes[0].inputDevice.isEmpty() && p.midiRoutes[1].inputDevice.isEmpty()
+               && p.midiRoutes[2].inputDevice.isEmpty(),
+           "inputDevice \"\" / ausente / null -> sin puerto");
+    check (warnings.isEmpty(), "rutas sin puerto sin advertencias: " + warnings.joinIntoString (" | "));
+    juce::var written;
+    check (juce::JSON::parse (serializer::toJson (p), written).wasOk() && written["midiRoutes"].size() == 3
+               && written["midiRoutes"][1]["inputDevice"].isString() && written["midiRoutes"][2]["inputDevice"].toString().isEmpty(),
+           "se escriben con \"inputDevice\": \"\"");
 }
 
 void testFiles()
@@ -323,7 +347,7 @@ void testFixturesAndExamples()
     // tests/fixtures: the test projects (fixed contents, also used by the API and render tests).
     std::cout << "proyectos de prueba (tests/fixtures/)" << std::endl;
     const auto fixtures = sourceDir.getChildFile ("tests").getChildFile ("fixtures");
-    for (auto name : { "prueba-etapa5.vstproj.json", "plugin-faltante.vstproj.json" })
+    for (auto name : { "prueba-etapa5.vstproj.json", "plugin-faltante.vstproj.json", "sin-puerto.vstproj.json" })
         checkProjectFile (fixtures.getChildFile (name), true);
 
     // examples/: edited by hand or with the app, so only "loads and round-trips".

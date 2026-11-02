@@ -1,8 +1,9 @@
 // Offline render test (VstPlayer.exe --render), run by tools/run-render-test.ps1.
 // Writes small Standard MIDI Files and a test project (two Dexed instances), renders them with
 // the exe spawned as Node would (piped stdio), parses the JSON summary and the WAV, and checks
-// sample-accurate onsets, tempo map, routing (keep / remapTo, routes of any input device),
-// CC7, tail length, determinism, errors and JUCE assertions / leaks (--debug-to-stdout).
+// sample-accurate onsets, tempo map, routing (keep / remapTo, routes of any input device or
+// with no port: tests/fixtures/sin-puerto), CC7, tail length, determinism, errors and JUCE
+// assertions / leaks (--debug-to-stdout).
 //
 //   node tools/render-test.mjs --exe <VstPlayer.exe> --data-dir <dir> --fixtures <dir> --tmp <dir>
 //                              [--allowed-leaks A,B]
@@ -263,6 +264,23 @@ const PAD = Math.round(0.5 * SR)
     check(s.peakDb === -100 && maxAbs(wav) === 0, 'sin ruta: silencio')
     check(wav.frames === SR, 'sin ruta: termina en el ultimo evento (nada audible)', wav.frames + ' frames')
     check((s.warnings || []).some((w) => /sin ruta/.test(w)), 'sin ruta: aviso', JSON.stringify(s.warnings))
+  }
+}
+
+// ---- 4b. routes with no port (tests/fixtures/sin-puerto: "inputDevice": "") ----------------
+{
+  const midNoPort = write('sin-puerto.mid', smf(0, [[
+    [sec(0.5), on(1, 60, 100)], [sec(0.5), on(3, 48, 100)], [sec(0.5), on(5, 72, 100)],
+    [sec(1.0), off(1, 60)], [sec(1.0), off(3, 48)], [sec(1.0), off(5, 72)],
+  ]]))
+  const { s, wav } = await render('sin puerto', path.join(examples, 'sin-puerto.vstproj.json'), midNoPort, path.join(tmp, 'sin-puerto.wav'), ['--warmup', '1'])
+  if (wav) {
+    const piano = inst(s, 'Piano'), bajo = inst(s, 'Bajo')
+    check(piano.noteOns?.[0] === 1 && piano.midiEvents === 2, 'sin puerto: canal 1 llega a Piano (keep)', JSON.stringify(piano.noteOns))
+    check(bajo.noteOns?.[0] === 1 && bajo.noteOns?.[2] === 0 && bajo.midiEvents === 2, 'sin puerto: canal 3 llega a Bajo por el canal 1 (remapTo)', JSON.stringify(bajo.noteOns))
+    check(piano.peakDb > -60 && bajo.peakDb > -60, 'sin puerto: las dos instancias suenan', `Piano ${piano.peakDb}, Bajo ${bajo.peakDb} dBFS`)
+    check(s.midiRouted === 4 && s.midiUnrouted === 2, 'sin puerto: canal 5 sin ruta', `${s.midiRouted} / ${s.midiUnrouted}`)
+    check((s.warnings || []).length === 1 && /sin ruta/.test(s.warnings[0]), 'sin puerto: solo el aviso del canal sin ruta', JSON.stringify(s.warnings))
   }
 }
 

@@ -201,7 +201,9 @@ void checkLayout (juce::Component& c, juce::StringArray& problems, const juce::S
 
     for (auto* child : c.getChildren())
     {
-        if (! child->isVisible())
+        // A tooltip is a transient overlay (shown when the real mouse pointer happens to rest
+        // over a control while the test runs), not part of the layout.
+        if (! child->isVisible() || dynamic_cast<juce::TooltipWindow*> (child) != nullptr)
             continue;
 
         visibleChildren.add (child);
@@ -551,6 +553,52 @@ void InstanceSelfTest::buildUiSteps()
     addThroughDialog ("dexed", &s.dexedId, "Dexed");
 
     waitMs (500);
+
+    // New instances: a route with no port on the first free channel (no MIDI device needed).
+    const auto rowShows = [this, &panel] (const InstanceId& id, const juce::String& label, const juce::String& port, const juce::String& channels)
+    {
+        const auto info = panel.getRowInfo (id);
+        return check (info.port == port && info.channels == channels, label + ": [" + info.port + "] [" + info.channels + "]");
+    };
+
+    action ("Instancias nuevas: entrada MIDI 'Sin puerto' en los canales 1, 2 y 3", [this, &s, rowShows]
+    {
+        const auto noPort = juce::String::fromUTF8 (InstancePanel::kNoPortText);
+        auto ok = rowShows (s.surgeId, "Surge XT", noPort, "Canales: 1");
+        ok = rowShows (s.sforzandoId, "sforzando", noPort, "Canales: 2") && ok;
+        ok = rowShows (s.dexedId, "Dexed", noPort, "Canales: 3") && ok;
+
+        for (auto& route : router.getRoutes())
+            ok = check (! route.hasPort() && route.isKeep(), "ruta sin puerto, keep") && ok;
+
+        return check (router.getRoutes().size() == 3, juce::String ((int) router.getRoutes().size()) + " rutas") && ok;
+    });
+
+    action ("sforzando: '(no recibe MIDI)' quita la ruta", [this, &panel, &s]
+    {
+        panel.removeInstanceMidiRoute (s.sforzandoId);
+        return check (router.getRoutesForInstance (s.sforzandoId).empty(), "sin ruta");
+    });
+
+    waitMs (200); // the rows refresh asynchronously (router change message)
+
+    action ("La fila de sforzando muestra '(no recibe MIDI)'", [&s, rowShows]
+    {
+        return rowShows (s.sforzandoId, "sforzando", juce::String::fromUTF8 (InstancePanel::kNoRouteText), "Canales: -");
+    });
+
+    action ("sforzando: 'Sin puerto' otra vez toma el primer canal libre (2)", [&panel, &s]
+    {
+        panel.setInstanceMidiPort (s.sforzandoId, {});
+        return true;
+    });
+
+    waitMs (200);
+
+    action ("La fila de sforzando muestra 'Sin puerto', canal 2", [&s, rowShows]
+    {
+        return rowShows (s.sforzandoId, "sforzando", juce::String::fromUTF8 (InstancePanel::kNoPortText), "Canales: 2");
+    });
     layoutCheck ("1024x600 con 3 instancias", true);
     shot ("03-tres-instancias-1024x600");
 

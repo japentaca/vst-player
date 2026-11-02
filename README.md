@@ -16,8 +16,10 @@ sintes nativos sin cambiar nada de su lado. Además expone una **API local** (HT
 
 - Windows 10 u 11 de 64 bits. No hace falta instalar nada más para el programa (el runtime de
   Visual C++ va enlazado dentro del ejecutable).
-- [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) (gratis) para recibir MIDI desde
-  el navegador u otros programas, con un puerto creado (por ejemplo el que propone, `loopMIDI Port`).
+- Opcional: [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) (gratis) para recibir MIDI
+  desde el navegador u otros programas por un puerto MIDI (por ejemplo el que propone, `loopMIDI Port`),
+  o un teclado MIDI. **No hace falta para carrilion**: su salida "VstPlayer" toca por la API local con
+  rutas "Sin puerto" (ver "carrilion → VstPlayer sin dispositivos MIDI").
 - Plugins **VST3** de 64 bits instalados (normalmente en `C:\Program Files\Common Files\VST3`).
   Probado con Dexed, Surge XT y sforzando.
 - Una salida de audio. Por defecto usa *Windows Audio* (WASAPI compartido); en muchas placas eso
@@ -58,8 +60,12 @@ Archivos del usuario: `%APPDATA%\VstPlayer\` (`settings.xml`, `plugins.xml`, `re
 ## Uso rápido
 
 1. **+ Agregar instancia…**: buscar el plugin (por nombre o fabricante) y doble clic.
-2. En la fila de la instancia, segunda línea: elegir el **puerto MIDI** (`loopMIDI Port`), los
-   **Canales** (botón con los 16 canales) y el modo: *Canal original (keep)* o *Remapear → canal n*.
+2. En la fila de la instancia, segunda línea: la **entrada MIDI**, los **Canales** (botón con los 16
+   canales) y el modo: *Canal original (keep)* o *Remapear → canal n*. Una instancia nueva ya viene con
+   **Sin puerto (sólo API / carrilion)** en el primer canal libre (la primera en el canal 1, la
+   segunda en el 2…): toca lo que manda carrilion por ese canal sin ningún dispositivo MIDI. Para tocar
+   también desde loopMIDI o un teclado MIDI, elegir el puerto (`loopMIDI Port`); *(no recibe MIDI)*
+   quita la ruta.
 3. **Editor** abre la interfaz del plugin (elegir preset, patch, cargar un SFZ…). Cerrar la ventana no
    borra la instancia.
 4. Hacer clic en una fila y tocar el **teclado virtual** (abajo) para probar sin MIDI externo.
@@ -73,7 +79,22 @@ los canales 2 y 3 remapeados al 1, sforzando en el canal 4, todo desde `loopMIDI
 `plugin-faltante.vstproj.json` (muestra cómo se ve un plugin no instalado). Un plugin que no esté
 instalado o escaneado aparece en rojo como "FALTA" y el resto del proyecto funciona igual.
 
-## Flujo carrilion → loopMIDI → VstPlayer
+## carrilion → VstPlayer sin dispositivos MIDI (lo más simple)
+
+No hace falta loopMIDI ni un teclado MIDI:
+
+1. Abrir **VstPlayer** y agregar las instancias (**+ Agregar instancia…**). Cada una queda en "Sin puerto
+   (sólo API / carrilion)" en su canal (1, 2, 3…); cambiar los **Canales** si carrilion usa otros.
+   Guardar el proyecto (Ctrl+S) para la próxima vez.
+2. En carrilion, en el selector **Midi Out**, elegir **VstPlayer**. La línea de estado muestra las
+   rutas leídas (p. ej. `VstPlayer conectado: 1→Dexed, 2→Pads`).
+3. Reproducir: cada canal suena en su instancia; el LED MIDI de la fila no se enciende (carrilion
+   manda directo a la instancia), pero el vúmetro sí se mueve.
+
+Una ruta "Sin puerto" no escucha ningún puerto MIDI: si después se conecta un teclado, no suena en esa
+instancia hasta que se elija su puerto en la fila (la ruta con puerto sigue valiendo para carrilion).
+
+## Flujo carrilion → loopMIDI → VstPlayer (opcional)
 
 1. Abrir **loopMIDI** y verificar que existe el puerto (`loopMIDI Port`). loopMIDI tiene que estar
    corriendo (queda en la bandeja del sistema).
@@ -92,7 +113,8 @@ Si se borra y se vuelve a crear el puerto en loopMIDI con la app abierta, la fil
 puerto).
 
 **Sin loopMIDI:** en el selector Midi Out de carrilion, la opción **VstPlayer** toca por la API local
-(WebSocket) con las mismas rutas del proyecto. Se reconecta sola si VstPlayer se abre después.
+(WebSocket) con las mismas rutas del proyecto (las de cualquier puerto y las "Sin puerto"; ver la
+sección anterior). Se reconecta sola si VstPlayer se abre después.
 
 **Volumen y pan:** carrilion manda el volumen y el pan de cada canal como CC7 / CC10 por su canal MIDI
 (por cualquiera de los dos caminos) y VstPlayer los aplica en la instancia que recibe ese canal, encima
@@ -111,7 +133,8 @@ campos desconocidos se conservan al volver a guardar. Especificación completa:
 Servidor en **`127.0.0.1:9471`** (sólo loopback): `POST /api` con un comando JSON, WebSocket en `/ws`
 con respuestas y eventos (`paramChanged`, `instanceAdded`, `projectLoaded`, `midiActivity`…). Comandos:
 `status`, `loadProject`, `listProjects`, `saveProject`, `listParams`, `getParam`, `setParam`, `setGain`,
-`setMute`, `panic`, `listPrograms`, `setProgram`, `midi`. La barra de estado muestra
+`setMute`, `panic`, `listPrograms`, `setProgram`, `midi` (a una instancia, o sin `instanceId` por las
+rutas del proyecto). La barra de estado muestra
 `API: 127.0.0.1:9471, N clientes`.
 
 Desde la consola del navegador (F12) en cualquier página:
@@ -171,8 +194,8 @@ VstPlayer.exe --render proyecto.vstproj.json --midi eventos.mid --out salida.wav
   rutas MIDI); el bloque `audio` del proyecto se ignora. Si una instancia no carga (plugin faltante o
   que falla) el render **falla** (exit 1). No escribe nada en la carpeta de datos.
 - MIDI de tipo 0 o 1, con su mapa de tempo; el tiempo 0 del archivo es la primera muestra del WAV. Cada
-  mensaje pasa por las rutas MIDI del proyecto **de todos los puertos** (canales de origen, `keep` /
-  `remapTo`), como si llegara por el puerto; CC7 / CC10 se aplican como volumen / pan de la instancia.
+  mensaje pasa por las rutas MIDI del proyecto **de todos los puertos y las "Sin puerto"** (canales de
+  origen, `keep` / `remapTo`), como si llegara por el puerto; CC7 / CC10 se aplican como volumen / pan de la instancia.
   Mensajes de sistema, sysex y meta se ignoran.
 - `--warmup`: segundos de silencio procesados a ritmo real y descartados antes de empezar (plugins que
   cargan samples en segundo plano). `--block`: tamaño de bloque del render.

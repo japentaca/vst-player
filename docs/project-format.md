@@ -105,12 +105,29 @@ siguen lo que se edite. Lo mismo vale para una instancia cuyo plugin existe pero
 
 | Campo | Tipo | Descripción |
 |---|---|---|
-| `inputDevice` | texto | Nombre del puerto MIDI de entrada (p. ej. `"loopMIDI Port"`). Si no existe al abrir, la ruta queda inactiva (se avisa) y se activa sola cuando aparece. |
+| `inputDevice` | texto | Nombre del puerto MIDI de entrada (p. ej. `"loopMIDI Port"`). Si no existe al abrir, la ruta queda inactiva para ese puerto (se avisa) y se activa sola cuando aparece. **`""` (o ausente, o `null`) = ruta sin puerto** (ver abajo); se escribe siempre como `""`. |
 | `channels` | lista de enteros | Canales de origen 1..16. Si falta: todos. Valores fuera de rango se ignoran (aviso). |
 | `instanceId` | texto | `id` de la instancia destino. |
 | `channelMode` | `"keep"` u objeto | `"keep"`: pasa el canal original. `{ "remapTo": n }`: todo sale por el canal `n` (1..16). También se acepta el texto `"remapTo:n"`. |
 
 Una instancia puede tener varias rutas (de distintos puertos o canales).
+
+**Rutas sin puerto** (`"inputDevice": ""`): la instancia toma esos canales, pero **ningún puerto MIDI**
+le llega por esa ruta. La usan quienes aplican las rutas sin pasar por un puerto: la salida "VstPlayer"
+de carrilion (lee `status.midiRoutes`), el comando `midi` sin `instanceId` de la API y `--render` (que
+cuentan todas las rutas, con o sin puerto). Es la forma de usar VstPlayer sin loopMIDI ni ningún
+dispositivo MIDI. En la UI: "Sin puerto (sólo API / carrilion)". Al abrir no generan aviso.
+
+```json
+{ "inputDevice": "", "channels": [1], "instanceId": "1b4e28ba-2fa1-11d2-883f-0016d3cca427", "channelMode": "keep" }
+```
+
+Compatibilidad: no cambia la versión del esquema. Un archivo viejo se abre igual (sus rutas tienen
+puerto). Un archivo nuevo abierto con una versión anterior de VstPlayer: la ruta se lee sin avisos (el
+texto vacío ya era válido) y queda igual de inerte para los puertos; esa versión la publica igual en
+`status.midiRoutes` (carrilion la usa) y `--render` la respeta; en su UI la fila muestra "(sin entrada
+MIDI)" con los canales y el modo editables, y elegir "(sin entrada MIDI)" ahí borra la ruta. Al volver a
+guardar se conserva.
 
 ## Compatibilidad hacia adelante
 
@@ -140,3 +157,6 @@ aviso.
 ## Historial
 
 - v1 (etapa 5): primera versión.
+- v1, después de v0.1.0: `"inputDevice": ""` pasa a significar "ruta sin puerto" (sin cambio de
+  versión: ya se leía y escribía igual, sólo cambia cómo la muestra la UI y que la API la aplica con
+  `midi` sin `instanceId`).

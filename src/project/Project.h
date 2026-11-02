@@ -65,7 +65,7 @@ struct AudioSetup
 
 struct MidiRouteData
 {
-    juce::String inputDevice;
+    juce::String inputDevice; // empty (also missing / null in the file) = no port: API / carrilion / --render
     std::vector<int> channels; // 1..16, ascending
     juce::String instanceId;
     int remapTo = 0; // 0 = "keep", 1..16 = { "remapTo": n }

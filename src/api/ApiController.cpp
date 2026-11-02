@@ -45,6 +45,7 @@ double toDb (float gain)
     return juce::Decibels::gainToDecibels (gain, -100.0f);
 }
 
+// "inputDevice": "" = a route with no port (API / carrilion / --render only).
 juce::var routeToVar (const MidiRoute& route)
 {
     auto o = new Obj();
@@ -471,10 +472,12 @@ ApiController::Reply ApiController::setParamDirect (const juce::var& request)
 
 ApiController::Reply ApiController::midiDirect (const juce::var& request)
 {
+    // No instanceId: through the routes (MidiRouter::routeMidi), see docs/api.md.
     const auto id = request["instanceId"].toString();
+    const auto routed = ! request.hasProperty ("instanceId");
 
-    if (id.isEmpty())
-        return fail (400, "badRequest", "Falta \"instanceId\".");
+    if (id.isEmpty() && ! routed)
+        return fail (400, "badRequest", juce::String::fromUTF8 ("\"instanceId\" vacío (para rutear por canal, omitirlo)."));
 
     const auto* bytes = request["bytes"].getArray();
 
@@ -512,6 +515,19 @@ ApiController::Reply ApiController::midiDirect (const juce::var& request)
 
         messages.push_back (length == 2 ? juce::MidiMessage (statusByte, data[0]) : juce::MidiMessage (statusByte, data[0], data[1]));
         i += length;
+    }
+
+    if (routed)
+    {
+        int deliveries = 0;
+
+        for (auto& m : messages)
+            deliveries += router.routeMidi (m);
+
+        auto data = new Obj();
+        data->setProperty ("messages", (int) messages.size());
+        data->setProperty ("routed", deliveries);
+        return ok (data);
     }
 
     const juce::ScopedLock sl (liveLock);
@@ -618,7 +634,8 @@ juce::var ApiController::describeInstance (const Instance& instance) const
 
     juce::Array<juce::var> routes;
     for (auto& route : router.getRoutesForInstance (instance.id))
-        routes.add (routeToVar (route));
+        if (route.channelMask != 0)
+            routes.add (routeToVar (route));
 
     o->setProperty ("midiRoutes", routes);
     return juce::var (o);
@@ -677,9 +694,12 @@ void ApiController::cmdStatus (const juce::var&, const Responder& respond)
 
     data->setProperty ("instances", instances);
 
+    // A route with no channels routes nothing: left out, since clients that apply the routes
+    // themselves may read "channels": [] as "all" (carrilion's route_table does).
     juce::Array<juce::var> routes;
     for (auto& route : router.getRoutes())
-        routes.add (routeToVar (route));
+        if (route.channelMask != 0)
+            routes.add (routeToVar (route));
 
     data->setProperty ("midiRoutes", routes);
 

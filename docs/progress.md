@@ -1413,3 +1413,81 @@ etapa 4 hará que el render de carrilion llame a ese exe).
 - carrilion (etapa 4): que su herramienta de render llame a `bin/win64/VstPlayer.exe --render`.
 - Cada publicación agrega ~7 MB al historial de git de carrilion; si se publica seguido, considerar
   Git LFS o releases.
+
+## Después de v0.1.0 — Rutas sin puerto MIDI  (2026-11-02)
+
+Problema: la salida "VstPlayer" de carrilion (y `--render`) aplica las rutas de `status.midiRoutes`,
+pero VstPlayer sólo creaba una ruta al elegir un puerto MIDI de entrada en la fila. Quien baja el exe
+desde carrilion sin teclado MIDI ni loopMIDI no podía crear ninguna ruta: carrilion decía "sin rutas"
+y no sonaba nada.
+
+**Qué se hizo:**
+- **Semántica elegida: "sin puerto"** (no "cualquier puerto"). Una ruta con `inputDevice` vacío dice
+  "esta instancia toma el canal n" sin escuchar ningún puerto: la usan carrilion, `--render` y el
+  nuevo `midi` sin `instanceId`; el MIDI de los puertos no llega por ella. Se descartó "cualquier
+  puerto" porque haría que una instancia empiece a recibir MIDI de un teclado o de loopMIDI que el
+  usuario nunca eligió (notas dobles con carrilion por loopMIDI + API, sorpresas al enchufar algo);
+  "sin puerto" no depende de qué hay conectado y es lo que pide el caso real. Queda anotado en el
+  roadmap por si hace falta.
+- **Formato** (`docs/project-format.md`): `"inputDevice": ""` (también ausente o `null` al leer, se
+  escribe `""`). Sin cambio de versión: el texto vacío ya se leía sin avisos y el router lo ignoraba,
+  así que un archivo nuevo en una versión vieja funciona igual (inerte para los puertos, publicado en
+  `status`, respetado por `--render`); sólo la UI vieja lo muestra como "(sin entrada MIDI)". Abrir un
+  proyecto no agrega ni cambia rutas.
+- **Router**: `MidiRoute::hasPort()`; las rutas sin puerto no abren puertos ni entran en la tabla de
+  los puertos. Nueva tabla de despacho con **todas** las rutas y `MidiRouter::routeMidi` (cualquier
+  hilo): entrega por canal como carrilion / `--render` (una copia por instancia y canal de salida, aun
+  con dos rutas al mismo canal), con seguimiento de notas sostenidas, LED de la fila y log `(API)`.
+- **API**: `midi` sin `instanceId` rutea dentro de VstPlayer (`{"messages":n,"routed":m}`);
+  `"instanceId": ""` → 400. `status.midiRoutes` (global y por instancia) incluye las rutas sin puerto
+  con `"inputDevice": ""` (mismo formato: el `route_table` de carrilion no mira el dispositivo) y ya no
+  lista las rutas sin canales (`route_table` lee `"channels": []` como "todos").
+- **UI**: el selector de la fila tiene "(no recibe MIDI)" (sin ruta), "Sin puerto (sólo API /
+  carrilion)" y los puertos (tooltip con la explicación). Una ruta nueva (instancia nueva, o elegir
+  algo en una fila sin ruta) toma el **primer canal libre** (antes: todos los canales). **Las
+  instancias nuevas** ("Agregar instancia…") vienen con "Sin puerto" en el primer canal libre: la
+  primera en el 1, la segunda en el 2… "Duplicar" copia las rutas como antes. `InstancePanel`:
+  `setInstanceMidiPort (id, "")` = sin puerto, `removeInstanceMidiRoute`. **Puertos MIDI…**: una línea
+  "(sin puerto: sólo API / carrilion) rutas: N" y el MIDI ruteado por la API en el log como `(API)`; el
+  aviso "no hay puertos" ya no manda a instalar loopMIDI.
+- `ProjectController`: el aviso de ruta a una instancia inexistente nombra "La ruta MIDI sin puerto".
+- **Ítem del roadmap "MIDI de la API no pasa por las rutas"**: resuelto para `midi` sin `instanceId`
+  (chico: la tabla ya existía para los puertos). carrilion no se tocó: sigue aplicando las rutas él
+  mismo (funciona igual); pasar a `midi` sin `instanceId` queda como mejora posible.
+- Tests: fixture nuevo `tests/fixtures/sin-puerto.vstproj.json` (dos Dexed: Piano ← canal 1 keep, Bajo
+  ← 2 y 3 remapTo 1, ambos sin puerto). `ProjectRoundTripTest`: ruta sin puerto en el proyecto
+  sintético (`"inputDevice": ""` escrito como texto), lectura de `""` / ausente / `null` sin avisos,
+  fixture en modo estricto. `--midi-selftest`: rutas por defecto (A 1, B 2, C 3 sin puerto, puerto
+  cerrado), `routeMidi` a una ruta sin puerto y por un canal sin ruta, C "sin puerto": el MIDI de
+  loopMIDI por su canal no le llega y el de la API sí, log `(API)`, dos rutas al mismo canal = una
+  entrega. `run-ui-test`: filas nuevas en "Sin puerto" canales 1/2/3, "(no recibe MIDI)" y vuelta al
+  primer canal libre. `run-project-test`: una ruta sin puerto (remapTo 1) se guarda y se reabre igual,
+  sin avisos. `run-api-test`: `status` con las rutas sin puerto, el **puerto de carrilion real**
+  (`../carrilion/apps/web/lib/core/vstplayer-port.js`, si el repo está al lado; si no, una copia de
+  `route_table`) lee "1→Piano, 2→Bajo:1, 3→Bajo:1" y hace sonar cada instancia por su canal; `midi` sin
+  `instanceId` (WebSocket y HTTP), canal sin ruta (`routed` 0), errores. `run-render-test`: el fixture
+  rinde con canal 1 → Piano, canal 3 → Bajo por el 1, canal 5 sin ruta.
+
+**Archivos:** `src/engine/MidiRouter.{h,cpp}`, `src/api/ApiController.cpp`,
+`src/ui/InstancePanel.{h,cpp}`, `src/ui/MidiPortsWindow.{h,cpp}`, `src/project/{Project.h,
+ProjectController.cpp}`, `src/app/{MidiSelfTest,UiSelfTest,ProjectSelfTest}.cpp` (en `UiSelfTest`
+además el chequeo de layout ignora los tooltips), `tests/ProjectRoundTripTest.cpp`, `tests/fixtures/sin-puerto.vstproj.json` (nuevo),
+`tools/{api-test,render-test}.mjs`, `README.md`, `CLAUDE.md`, `docs/{api,project-format,roadmap}.md`.
+
+**Verificación:** builds Release y Debug sin warnings. Suite completa en Release y en Debug (Debug con
+`-AllowedLeaks VST3HostContextHeadless,AsyncUpdater` donde se carga sforzando): `ctest` (121/121
+comprobaciones), `--instance-selftest`, `--midi-selftest`, `run-project-test.ps1`, `run-ui-test.ps1`,
+`run-api-test.ps1` (111/111) y `run-render-test.ps1` (88/88): OK, 0 aserciones, sólo las fugas
+conocidas de sforzando en Debug. En `%APPDATA%\VstPlayer` sólo lo que ya tocaba el re-escaneo de
+`run-ui-test.ps1` (`plugins.xml` con el mismo contenido, `plugin-scan.log`; ver su encabezado).
+`run-ui-test.ps1` falló dos veces por un chequeo de layout: "se superponen InstancePanel y tooltip":
+el puntero real quedó sobre un control y JUCE mostró su tooltip, que el chequeo tomaba como un
+componente más. `checkLayout` ahora ignora los `TooltipWindow`; después pasó en Release y Debug. En una
+corrida Debug también falló una vez "la UI siguió respondiendo durante el escaneo" (hueco 252 ms,
+límite 250): timing de Debug, no relacionado.
+
+**Pendiente:**
+- carrilion: podría usar `midi` sin `instanceId` (sin copia por instancia ni sondeo de rutas cada 5 s)
+  y leer `"channels": []` como "ningún canal".
+- Semántica "cualquier puerto" sin implementar (ver roadmap).
+- El límite de 250 ms del hueco durante el escaneo en `run-ui-test.ps1` queda justo en Debug.

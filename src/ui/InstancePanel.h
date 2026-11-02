@@ -23,9 +23,12 @@ class PluginEditorWindow;
 //   - One row per instance (scrollable list). Line 1: editable name (double click), plugin /
 //     state (red when missing or failed, progress bar while loading), stereo output meter
 //     (measured in the instance's gain node), gain slider (dB), mute, "Editor", "Duplicar",
-//     "Quitar". Line 2: MIDI activity LED, input port, channels (16 toggles or "todos") and
-//     channel mode (keep / remap to n). The UI edits one route per instance. Clicking a row
-//     selects it as the target of the virtual keyboard.
+//     "Quitar". Line 2: MIDI activity LED, MIDI input (no route / route with no port / a port),
+//     channels (16 toggles or "todos") and channel mode (keep / remap to n). The UI edits one
+//     route per instance. Clicking a row selects it as the target of the virtual keyboard.
+//   - A new instance ("Agregar instancia…" / addInstance) gets a route with no port on the
+//     first free channel, so it plays from carrilion / the API / --render right away, with no
+//     MIDI device. Instances of an opened project keep exactly the project's routes.
 //   - Virtual keyboard at the bottom (channel 1, to the selected instance), foldable. A note-off
 //     goes to the instance that received the note-on, even if the selection changed meanwhile.
 // Owns the plugin editor windows (one per instance, brought to front if already open) and
@@ -69,8 +72,11 @@ public:
     bool isKeyboardVisible() const noexcept { return keyboardVisible; }
 
     // MIDI input of an instance (same paths as the row controls). The UI keeps one route per
-    // instance: choosing a port creates it (all channels, keep), an empty name removes it.
+    // instance. setInstanceMidiPort: a port name, or empty for a route with no port (API /
+    // carrilion / --render only); if the instance had no route, one is created on the first
+    // free channel (keep). removeInstanceMidiRoute: no route at all ("no recibe MIDI").
     void setInstanceMidiPort (const InstanceId& id, const juce::String& portName);
+    void removeInstanceMidiRoute (const InstanceId& id);
     void setInstanceMidiChannels (const InstanceId& id, juce::uint16 channelMask);
     void setInstanceMidiRemap (const InstanceId& id, int remapChannel); // 0 = keep
 
@@ -98,6 +104,13 @@ public:
     void resized() override;
 
     static constexpr int kKeyboardChannel = 1;
+
+    // Texts of the MIDI input selector (UTF-8) besides the port names.
+    static constexpr const char* kNoRouteText = "(no recibe MIDI)";
+    static constexpr const char* kNoPortText = "Sin puerto (sólo API / carrilion)";
+
+    // Lowest channel (1..16) that no route uses yet; 1 if every channel is taken.
+    static int firstFreeChannel (const std::vector<MidiRoute>& routes);
 
 private:
     class Row;

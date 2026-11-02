@@ -79,6 +79,10 @@ Proyecto, audio, instancias y rutas.
    "midiRoutes":[...],
    "api":{"host":"127.0.0.1","port":9471,"clients":1,"version":1,"app":"0.1.0"}}
 ```
+`midiRoutes` (de todo el proyecto y por instancia): canales de origen, instancia destino y `keep` /
+`remapTo`, como en el formato de proyecto. `"inputDevice": ""` es una **ruta sin puerto** (ver
+"Rutas sin puerto" abajo). Las rutas sin canales (la fila con "Canales: ninguno") no se listan: no
+rutean nada, y un cliente que aplica las rutas por su cuenta podría leer `"channels": []` como "todos".
 `state`: `loading`, `ready`, `failed` (con `error`), `missing` (plugin no instalado). `midiMix`: los
 últimos CC7 (volumen) y CC10 (pan) que recibió la instancia, `null` si todavía no llegó ninguno (ver
 "Volumen y pan por MIDI"). `currentProgram`
@@ -187,12 +191,34 @@ programas: lista vacía). Ver "Valores viejos" en `listParams`.
 {"cmd":"midi","instanceId":"Dexed","bytes":[144,60,100]}
 {"cmd":"midi","instanceId":"Dexed","bytes":[128,60,0, 144,64,90]}   // varios mensajes seguidos
 → {"ok":true,"instanceId":"...","messages":2}
+
+{"cmd":"midi","bytes":[146,50,100]}                                 // sin instanceId: por las rutas
+→ {"ok":true,"messages":1,"routed":1}
 ```
-MIDI directo a una instancia, alternativa a loopMIDI para pruebas y control. Sólo mensajes de canal
-(status 0x80–0xEF, sin running status); sysex y mensajes de sistema → 400 `badMidi`. Sin timestamps:
-entra en el bloque de audio siguiente. No pasa por las rutas MIDI (el canal va tal cual) ni por el
-seguimiento de notas sostenidas del router; `panic` igual lo corta. Cuenta para `midiActivity` pero no
-enciende el LED de la fila (que muestra lo que llega por los puertos).
+MIDI desde la API, alternativa a loopMIDI. Sólo mensajes de canal (status 0x80–0xEF, sin running
+status); sysex y mensajes de sistema → 400 `badMidi`. Sin timestamps: entra en el bloque de audio
+siguiente. `panic` lo corta igual.
+
+- **Con `instanceId`**: directo a esa instancia. No pasa por las rutas MIDI (el canal va tal cual) ni
+  por el seguimiento de notas sostenidas del router. Cuenta para `midiActivity` pero no enciende el LED
+  de la fila. `"instanceId": ""` → 400 (para rutear, omitirlo).
+- **Sin `instanceId`**: VstPlayer aplica las rutas del proyecto, como si el mensaje llegara por un
+  puerto que escuchan **todas** las rutas (con puerto o sin puerto): cada instancia cuya ruta toma ese
+  canal lo recibe, con `keep` / `remapTo`. Es la misma regla que aplican la salida "VstPlayer" de
+  carrilion y `--render`, así un cliente no necesita leer `status.midiRoutes` ni mandar una copia por
+  instancia. `routed` = entregas (0 = ningún canal ruteado; no es error). Pasa por el seguimiento de
+  notas sostenidas (un note-on repetido corta el anterior, cambiar la ruta suelta las notas), enciende el
+  LED de la fila, cuenta para `midiActivity` y aparece en el log de **Puertos MIDI…** como `(API)`.
+
+### Rutas sin puerto
+
+Una ruta con `"inputDevice": ""` dice "esta instancia toma el canal n" **sin escuchar ningún puerto
+MIDI**: la usan quienes aplican las rutas sin pasar por un puerto (la salida "VstPlayer" de carrilion,
+`midi` sin `instanceId`, `--render`), y el MIDI de los puertos (loopMIDI, un teclado) **no** llega por
+ella. En la fila de la instancia es "Sin puerto (sólo API / carrilion)", y es lo que reciben las
+instancias nuevas (primer canal libre). Sirve para usar VstPlayer desde carrilion sin loopMIDI ni
+ningún dispositivo MIDI. Una ruta con puerto también cuenta para carrilion y para `midi` sin
+`instanceId` (todas las rutas cuentan, sea cual sea el puerto).
 
 ### `levels` / `audioStats` (diagnóstico)
 ```json
@@ -236,7 +262,7 @@ Llegan a todos los WebSockets abiertos como `{"event": "<nombre>", ...}` (sin `o
 | `instanceRemoved` | `instanceId` | se quitó |
 | `paramChanged` | `instanceId`, `params: [{index, name, value, text}]`, `truncated?` | cambió algún parámetro (API, editor del plugin, automatización); **agrupado a 20 Hz por instancia**: como mucho 20 eventos por segundo y por instancia, con todos los parámetros que cambiaron en ese intervalo (máx. 256; `truncated: true` si hubo más: usar `listParams`) |
 | `projectLoaded` | `project`, `warnings`, `numInstances` | terminó de abrirse un proyecto (o "Nuevo") |
-| `midiActivity` | `instanceId`, `count` | llegó MIDI a la instancia (puertos o API); como mucho 20 por segundo por instancia; `count` = total acumulado |
+| `midiActivity` | `instanceId`, `count` | llegó MIDI a la instancia (puertos o API, con o sin `instanceId`); como mucho 20 por segundo por instancia; `count` = total acumulado |
 
 Ver "Valores viejos": los cambios internos de un plugin que no avisa al host no generan `paramChanged`.
 
@@ -248,7 +274,9 @@ Ver "Valores viejos": los cambios internos de un plugin que no avisa al host no 
   `MessageManager::callAsync` y el hilo de red espera la respuesta (10 s; 30 s `listParams`, 60 s
   `saveProject`, 120 s `loadProject`).
 - `setParam` y `midi` van directo desde el hilo de red: `setValueNotifyingHost` y el
-  `MidiMessageCollector` de la instancia son seguros desde cualquier hilo. Los punteros salen de una
+  `MidiMessageCollector` de la instancia son seguros desde cualquier hilo. `midi` sin `instanceId`
+  llama a `MidiRouter::routeMidi`, que usa una tabla de despacho de todas las rutas armada en el hilo
+  de mensajes bajo el lock del router (la misma que usan los puertos). Los punteros salen de una
   tabla que el hilo de mensajes actualiza bajo un lock **antes** de quitar los nodos de una instancia.
 - `paramChanged`: el listener marca banderas atómicas por parámetro (también desde el hilo de audio,
   bajo un `SpinLock` breve, y sólo si hay clientes) y un timer de 20 Hz en el hilo de mensajes arma los

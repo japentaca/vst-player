@@ -5,10 +5,11 @@
 //
 //   save           loads Dexed, Surge XT and sforzando, changes their state (Dexed program +
 //                  parameters, parameters in the others), gains, mute, a name, MIDI routes (keep,
-//                  remapTo, a port that does not exist, two routes for one instance), editor
-//                  windows (one open, one closed after moving it); saves <dir>\prueba.vstproj.json
-//                  with "Guardar como" and writes the expected fingerprint (every parameter value,
-//                  program, MD5 of getStateInformation, windows, routes, audio).
+//                  remapTo, a port that does not exist, a route with no port, two routes for
+//                  one instance), editor windows (one open, one closed after moving it); saves
+//                  <dir>\prueba.vstproj.json with "Guardar como" and writes the expected
+//                  fingerprint (every parameter value, program, MD5 of getStateInformation,
+//                  windows, routes, audio).
 //   verify-cli     started with "<dir>\prueba.vstproj.json" as argument: waits for the load and
 //                  compares the live setup with the fingerprint.
 //   verify-recent  started without a project: opens Recientes[0] (the menu path) and compares.
@@ -645,9 +646,15 @@ void InstanceSelfTest::buildProjectSteps()
             ghost.inputDevice = kGhostPort;
             ghost.channelMask = 1u << 3;
             ghost.instanceId = s.sforzandoId;
-            router.setRoutesForInstance (s.sforzandoId, { ghost });
 
-            return check (router.getRoutes().size() == 4, juce::String ((int) router.getRoutes().size()) + " rutas");
+            // And a route with no port (API / carrilion only): saved, reopened, no warning.
+            MidiRoute noPort;
+            noPort.channelMask = 1u << 4;
+            noPort.instanceId = s.sforzandoId;
+            noPort.remapChannel = 1;
+            router.setRoutesForInstance (s.sforzandoId, { ghost, noPort });
+
+            return check (router.getRoutes().size() == 5, juce::String ((int) router.getRoutes().size()) + " rutas");
         });
 
         addPlayAndMeasure ("con el estado cambiado");
@@ -771,7 +778,13 @@ void InstanceSelfTest::buildProjectSteps()
                                 + (i.window.hasPosition ? " (" + juce::String (i.window.x) + "," + juce::String (i.window.y) + ")" : juce::String()))
                      && ok;
 
-            ok = check (p.midiRoutes.size() == 4, juce::String ((int) p.midiRoutes.size()) + " rutas MIDI") && ok;
+            ok = check (p.midiRoutes.size() == 5, juce::String ((int) p.midiRoutes.size()) + " rutas MIDI") && ok;
+
+            auto noPortSaved = false;
+            for (auto& r : p.midiRoutes)
+                noPortSaved = noPortSaved || (r.inputDevice.isEmpty() && r.channels == std::vector<int> { 5 } && r.remapTo == 1);
+
+            ok = check (noPortSaved, "ruta sin puerto guardada (inputDevice \"\", canal 5, remapTo 1)") && ok;
             cli::print ("  tamano del archivo: " + juce::String (projectFile.getSize() / 1024) + " KB");
             return ok;
         });
@@ -983,7 +996,7 @@ void InstanceSelfTest::buildProjectSteps()
             ok = check (shown, "el aviso se mostro (mensaje de la ventana, en modo prueba sin dialogo)") && ok;
 
             // The other three are the saved ones; the route to the missing instance is there.
-            ok = check (graph.getInstances().size() == 4 && router.getRoutes().size() == 5, "4 instancias, 5 rutas") && ok;
+            ok = check (graph.getInstances().size() == 4 && router.getRoutes().size() == 6, "4 instancias, 6 rutas") && ok;
             return ok;
         });
 

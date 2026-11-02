@@ -444,7 +444,9 @@ void ProjectController::apply (const project::Project& p, const juce::File& file
         routes.push_back (route);
 
         if (graph.findInstance (route.instanceId) == nullptr)
-            warnings.add ("La ruta MIDI de \"" + data.inputDevice + "\" apunta a una instancia que no existe (" + data.instanceId + ").");
+            warnings.add ((data.inputDevice.isEmpty() ? juce::String ("La ruta MIDI sin puerto")
+                                                      : "La ruta MIDI de \"" + data.inputDevice + "\"")
+                          + " apunta a una instancia que no existe (" + data.instanceId + ").");
         else if (! offlineRender && data.inputDevice.isNotEmpty() && ! router.getAvailableInputNames().contains (data.inputDevice))
             warnings.add ("El puerto MIDI \"" + data.inputDevice
                           + juce::String::fromUTF8 ("\" no existe ahora; la ruta queda inactiva hasta que aparezca."));

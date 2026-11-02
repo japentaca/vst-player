@@ -277,6 +277,27 @@ void InstanceSelfTest::buildMidiSteps()
         waitMs (700);
     };
 
+    // The same, through MidiRouter::routeMidi (API `midi` without instanceId): every route counts,
+    // with or without a port.
+    const auto routeApiCase = [this, takeSnapshot, expectOnly]
+                              (const juce::String& label, int channel, std::vector<std::pair<const InstanceId*, int>> expected)
+    {
+        action ("== " + label, [this, takeSnapshot, channel, expected]
+        {
+            takeSnapshot();
+            const auto deliveries = router.routeMidi (juce::MidiMessage::noteOn (channel, 60, (juce::uint8) 100));
+            return check (deliveries == (int) expected.size(), "routeMidi: " + juce::String (deliveries) + " entrega(s)");
+        });
+        waitMs (400);
+        expectOnly (label + ": entregas", expected);
+        action ("(note-off por routeMidi)", [this, channel]
+        {
+            router.routeMidi (juce::MidiMessage::noteOff (channel, 60));
+            return true;
+        });
+        waitMs (500);
+    };
+
     //==========================================================================
     action ("Puertos MIDI del sistema", [this, &s]
     {
@@ -356,6 +377,33 @@ void InstanceSelfTest::buildMidiSteps()
         return ok;
     });
 
+    waitMs (200); // the rows refresh asynchronously (router change message)
+
+    action ("Instancias nuevas: ruta sin puerto en el primer canal libre (A 1, B 2, C 3)", [this, &panel, &s, nameOf]
+    {
+        auto ok = true;
+        int channel = 1;
+
+        for (auto& id : { s.a, s.b, s.c })
+        {
+            const auto routes = router.getRoutesForInstance (id);
+            const auto info = panel.getRowInfo (id);
+            ok = check (routes.size() == 1 && ! routes[0].hasPort() && routes[0].channelMask == maskOf ({ channel }) && routes[0].isKeep(),
+                        nameOf (id) + ": " + juce::String ((int) routes.size()) + " ruta(s), canales "
+                            + (routes.empty() ? juce::String ("-") : MidiRoute::describeChannels (routes[0].channelMask)))
+                 && ok;
+            ok = check (info.port == juce::String::fromUTF8 (InstancePanel::kNoPortText) && info.channels == "Canales: " + juce::String (channel),
+                        nameOf (id) + " fila: [" + info.port + "] [" + info.channels + "]")
+                 && ok;
+            ++channel;
+        }
+
+        return check (! router.isPortOpen (s.loopIn), "sin rutas con puerto: " + s.loopIn + " cerrado") && ok;
+    });
+
+    routeApiCase ("API ruteada (routeMidi): canal 2 -> solo B (ruta sin puerto)", 2, { { &s.b, 2 } });
+    routeApiCase ("API ruteada: canal 5 -> nadie", 5, {});
+
     //==========================================================================
     action ("Rutas por la UI: A <- canal 1 keep; B <- canales 2,3 remapTo 1; C <- canal 4 keep", [this, &panel, &s, nameOf]
     {
@@ -411,6 +459,66 @@ void InstanceSelfTest::buildMidiSteps()
                 found = entry.numTargets == 0 && entry.device == s.loopIn;
 
         return check (found, "note-on canal 5 recibido en " + s.loopIn + " sin destino");
+    });
+
+    //==========================================================================
+    // A route with no port: MIDI from the ports does not reach it, the routed API does.
+    action ("C pasa a 'Sin puerto' (conserva el canal 4)", [this, &panel, &s]
+    {
+        panel.setInstanceMidiPort (s.c, {});
+        const auto routes = router.getRoutesForInstance (s.c);
+        return check (routes.size() == 1 && ! routes[0].hasPort() && routes[0].channelMask == maskOf ({ 4 }), "C: ruta sin puerto, canal 4")
+               && check (router.isPortOpen (s.loopIn), s.loopIn + " sigue abierto (A y B)");
+    });
+
+    waitMs (200);
+    action ("La fila de C muestra 'Sin puerto'", [&panel, &s, this]
+    {
+        const auto info = panel.getRowInfo (s.c);
+        return check (info.port == juce::String::fromUTF8 (InstancePanel::kNoPortText) && info.channels == "Canales: 4",
+                      "[" + info.port + "] [" + info.channels + "]");
+    });
+
+    routeCase ("Puerto, canal 4 -> nadie (C sin puerto no escucha puertos)", 4, {});
+    routeApiCase ("API ruteada: canal 4 -> C (ruta sin puerto)", 4, { { &s.c, 4 } });
+    routeApiCase ("API ruteada: canal 2 -> B (ruta con puerto, remapTo 1)", 2, { { &s.b, 1 } });
+
+    action ("El log del router muestra el MIDI de la API como " + juce::String (MidiRouter::kApiSourceName), [this, &s]
+    {
+        auto found = false;
+
+        for (auto& entry : router.getRecentMessages())
+            if (entry.serial > s.logSerialBefore && entry.message.isNoteOn() && entry.message.getChannel() == 2)
+                found = entry.numTargets == 1 && entry.device == MidiRouter::kApiSourceName;
+
+        return check (found, "note-on canal 2 de la API con 1 destino");
+    });
+
+    action ("C vuelve a " + juce::String ("loopMIDI"), [this, &panel, &s]
+    {
+        panel.setInstanceMidiPort (s.c, s.loopIn);
+        const auto routes = router.getRoutesForInstance (s.c);
+        return check (routes.size() == 1 && routes[0].inputDevice == s.loopIn && routes[0].channelMask == maskOf ({ 4 }), "C: " + s.loopIn + ", canal 4");
+    });
+
+    action ("C con dos rutas al canal 4 (el puerto y otra sin puerto)", [this, &s]
+    {
+        auto routes = router.getRoutesForInstance (s.c);
+        auto extra = routes.front();
+        extra.inputDevice = {};
+        routes.push_back (extra);
+        router.setRoutesForInstance (s.c, routes);
+        return check (router.getRoutesForInstance (s.c).size() == 2, "2 rutas");
+    });
+
+    routeApiCase ("API ruteada: canal 4 -> C una sola vez (dos rutas, como carrilion)", 4, { { &s.c, 4 } });
+    routeCase ("Puerto, canal 4 -> C una sola vez (solo la ruta con puerto)", 4, { { &s.c, 4 } });
+
+    action ("C vuelve a una sola ruta (la UI edita la primera)", [this, &panel, &s]
+    {
+        panel.setInstanceMidiPort (s.c, s.loopIn);
+        const auto routes = router.getRoutesForInstance (s.c);
+        return check (routes.size() == 1 && routes[0].inputDevice == s.loopIn, juce::String ((int) routes.size()) + " ruta(s)");
     });
 
     action ("B pasa a keep (UI)", [&panel, &s] { panel.setInstanceMidiRemap (s.b, 0); return true; });
@@ -707,8 +815,8 @@ void InstanceSelfTest::buildMidiSteps()
 
     action ("Quitar las entradas MIDI de A y B: el puerto se cierra", [this, &panel, &s]
     {
-        panel.setInstanceMidiPort (s.a, {});
-        panel.setInstanceMidiPort (s.b, {});
+        panel.removeInstanceMidiRoute (s.a);
+        panel.removeInstanceMidiRoute (s.b);
         return check (router.getRoutes().empty(), "sin rutas") && check (! router.isPortOpen (s.loopIn), s.loopIn + " cerrado");
     });
 

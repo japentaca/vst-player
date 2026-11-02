@@ -147,7 +147,20 @@ private:
         }
 
         if (text.isEmpty())
-            text = juce::String::fromUTF8 ("No hay puertos MIDI de entrada. ¿Está corriendo loopMIDI?");
+            text = juce::String::fromUTF8 ("No hay puertos MIDI de entrada (¿loopMIDI o un teclado MIDI?). No hacen falta para "
+                                           "tocar desde carrilion o la API: rutas \"Sin puerto\".\n");
+
+        // Routes with no port: no port reaches them; carrilion / the API (midi without
+        // instanceId) / --render use them. Shown so the route counts add up.
+        int portless = 0;
+
+        for (auto& route : router.getRoutes())
+            if (! route.hasPort())
+                ++portless;
+
+        if (portless > 0)
+            text << juce::String::fromUTF8 ("(sin puerto: sólo API / carrilion)").paddedRight (' ', 28) << "  "
+                 << juce::String().paddedRight (' ', 14) << "  rutas: " << portless << "\n";
 
         if (text != portsText.getText())
             portsText.setText (text, false);
