@@ -4,7 +4,7 @@
 // sample-accurate onsets, tempo map, routing (keep / remapTo, routes of any input device),
 // CC7, tail length, determinism, errors and JUCE assertions / leaks (--debug-to-stdout).
 //
-//   node tools/render-test.mjs --exe <VstPlayer.exe> --data-dir <dir> --examples <dir> --tmp <dir>
+//   node tools/render-test.mjs --exe <VstPlayer.exe> --data-dir <dir> --fixtures <dir> --tmp <dir>
 //                              [--allowed-leaks A,B]
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -17,11 +17,11 @@ const opt = (name, def) => {
 }
 const exe = opt('exe')
 const dataDir = opt('data-dir')
-const examples = opt('examples')
+const examples = opt('fixtures') // tests/fixtures: test projects, not the editable examples/
 const tmp = opt('tmp')
 const allowedLeaks = (opt('allowed-leaks', '') || '').split(',').map((s) => s.trim()).filter(Boolean)
 if (!exe || !dataDir || !examples || !tmp) {
-  console.error('uso: node render-test.mjs --exe <exe> --data-dir <dir> --examples <dir> --tmp <dir>')
+  console.error('uso: node render-test.mjs --exe <exe> --data-dir <dir> --fixtures <dir> --tmp <dir>')
   process.exit(2)
 }
 

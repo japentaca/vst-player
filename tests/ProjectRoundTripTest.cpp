@@ -297,24 +297,39 @@ void testFiles()
 
     dir.deleteRecursively();
 }
-void testExamples()
+void checkProjectFile (const juce::File& file, bool strict)
 {
-    std::cout << "proyectos de ejemplo (examples/)" << std::endl;
+    const auto name = file.getFileName();
+    Project p;
+    juce::StringArray warnings;
+    const auto result = serializer::loadFile (file, p, &warnings);
+    check (result.wasOk(), name + ": " + result.getErrorMessage());
 
-    for (auto name : { "prueba-etapa5.vstproj.json", "plugin-faltante.vstproj.json" })
+    if (strict)
     {
-        const auto file = juce::File (VSTPLAYER_SOURCE_DIR).getChildFile ("examples").getChildFile (name);
-        Project p;
-        juce::StringArray warnings;
-        const auto result = serializer::loadFile (file, p, &warnings);
-        check (result.wasOk(), juce::String (name) + ": " + result.getErrorMessage());
-        check (warnings.isEmpty(), juce::String (name) + " sin advertencias: " + warnings.joinIntoString (" | "));
-        check (! p.instances.empty() && ! p.midiRoutes.empty(), juce::String (name) + " tiene instancias y rutas");
-
-        Project again;
-        check (serializer::fromJson (serializer::toJson (p), again).wasOk() && serializer::toJson (again) == serializer::toJson (p),
-               juce::String (name) + " round-trip estable");
+        check (warnings.isEmpty(), name + " sin advertencias: " + warnings.joinIntoString (" | "));
+        check (! p.instances.empty() && ! p.midiRoutes.empty(), name + " tiene instancias y rutas");
     }
+
+    Project again;
+    check (serializer::fromJson (serializer::toJson (p), again).wasOk() && serializer::toJson (again) == serializer::toJson (p),
+           name + " round-trip estable");
+}
+
+void testFixturesAndExamples()
+{
+    const juce::File sourceDir (VSTPLAYER_SOURCE_DIR);
+
+    // tests/fixtures: the test projects (fixed contents, also used by the API and render tests).
+    std::cout << "proyectos de prueba (tests/fixtures/)" << std::endl;
+    const auto fixtures = sourceDir.getChildFile ("tests").getChildFile ("fixtures");
+    for (auto name : { "prueba-etapa5.vstproj.json", "plugin-faltante.vstproj.json" })
+        checkProjectFile (fixtures.getChildFile (name), true);
+
+    // examples/: edited by hand or with the app, so only "loads and round-trips".
+    std::cout << "proyectos de ejemplo (examples/)" << std::endl;
+    for (const auto& file : sourceDir.getChildFile ("examples").findChildFiles (juce::File::findFiles, false, "*.vstproj.json"))
+        checkProjectFile (file, false);
 }
 } // namespace
 
@@ -324,7 +339,7 @@ int main()
     testUnknownFieldsSurvive();
     testTolerantReading();
     testFiles();
-    testExamples();
+    testFixturesAndExamples();
 
     std::cout << (failures == 0 ? "OK" : "FALLO") << ": " << (checks - failures) << "/" << checks << " comprobaciones" << std::endl;
     return failures == 0 ? 0 : 1;

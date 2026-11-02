@@ -12,6 +12,14 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#ifndef NOMINMAX
+ #define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+ #define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
 namespace vstplayer
 {
 
@@ -22,6 +30,22 @@ constexpr int kDefaultHeight = 700;
 constexpr int kMinWidth = 860;
 constexpr int kMinHeight = 540;
 constexpr const char* kLastProjectFolderKey = "lastProjectFolder";
+
+// JUCE registers its window class with ExtractAssociatedIcon for both icons, so title bars show
+// the large drawing shrunk. Give the class (shared by every JUCE window: main window, dialogs,
+// plugin editors) the small icon size from the exe's .ico, i.e. the simplified 16 / 32 px drawing
+// (resources/icon-small.svg). IDI_ICON1 is the resource name JUCE's generated .rc uses.
+void useSmallIconForTitleBars (juce::ComponentPeer* peer)
+{
+    if (peer == nullptr)
+        return;
+
+    auto* icon = static_cast<HICON> (LoadImageW (GetModuleHandleW (nullptr), L"IDI_ICON1", IMAGE_ICON,
+                                                 GetSystemMetrics (SM_CXSMICON), GetSystemMetrics (SM_CYSMICON),
+                                                 LR_DEFAULTCOLOR | LR_SHARED));
+    if (icon != nullptr)
+        SetClassLongPtrW (static_cast<HWND> (peer->getNativeHandle()), GCLP_HICONSM, reinterpret_cast<LONG_PTR> (icon));
+}
 } // namespace
 
 MainWindow::MainWindow (const juce::String& title, AppSettings& s, AudioEngine& e, PluginManager& p, InstanceGraph& instances,
@@ -66,6 +90,7 @@ MainWindow::MainWindow (const juce::String& title, AppSettings& s, AudioEngine& 
         centreWithSize (kDefaultWidth, kDefaultHeight);
 
     setVisible (true);
+    useSmallIconForTitleBars (getPeer());
 
     project.openEditor = [this] (const juce::String& id) { return getInstancePanel().openEditor (id); };
     project.syncEditorWindows = [this] { getInstancePanel().syncEditorWindowStates(); };

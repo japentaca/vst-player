@@ -40,9 +40,13 @@ src/project/          Project (modelo, sólo juce_core), ProjectSerializer (JSON
 src/api/              ApiServer (red, cpp-httplib, sin JUCE), ApiController (comandos, eventos)
 src/ui/               MainContent, InstancePanel (filas), AddInstanceDialog, PluginEditorWindow,
                       PluginListWindow, MidiPortsWindow, LevelMeter, Theme (look and feel oscuro)
-tests/                ProjectRoundTripTest.cpp
-tools/                build.ps1, dev-env.ps1, package.ps1, register-filetype.ps1, run-*-test.ps1, api-test.mjs,
-                      render-test.mjs
+resources/            ícono: icon.svg (48 px y más), icon-small.svg (16/32 px) y los PNG que pasa CMake
+                      (ICON_BIG / ICON_SMALL; JUCE arma el .ico). Regenerar: node tools/render-icon.mjs
+tests/                ProjectRoundTripTest.cpp; fixtures/ = proyectos de prueba fijos (prueba-etapa5 con sus
+                      3 instancias, plugin-faltante) para ctest, api-test y render-test. examples/ lo
+                      edita el usuario con la app: los tests no dependen de su contenido
+tools/                build.ps1, dev-env.ps1, package.ps1, publish-carrilion.ps1 (+ VSTPLAYER.md.in),
+                      register-filetype.ps1, render-icon.mjs, run-*-test.ps1, api-test.mjs, render-test.mjs
 docs/                 progress.md, project-format.md, api.md, roadmap.md
 examples/             proyectos de ejemplo, sfz/, carrilion-client.js (embebido en el exe: GET /client.js)
 ```
@@ -54,7 +58,13 @@ pwsh -NoProfile -File .\tools\build.ps1                    # Release -> build\Vs
 pwsh -NoProfile -File .\tools\build.ps1 -Config Debug      # Debug -> build-debug\
 pwsh -NoProfile -File .\tools\build.ps1 -BuildDir <dir>    # otro directorio (p. ej. compilar de cero)
 pwsh -NoProfile -File .\tools\package.ps1                  # Release + dist\VstPlayer-<versión>-win64.zip
+pwsh -NoProfile -File .\tools\publish-carrilion.ps1        # Release + ..\carrilion\bin\win64\VstPlayer.exe
 ```
+
+`publish-carrilion.ps1` copia el exe al repo de carrilion (`-Target <carpeta>` para otro lugar,
+`-SkipBuild` para no compilar) y escribe ahí `VSTPLAYER.md` (versión, commit de HEAD, fecha, tamaño,
+SHA-256, licencia) desde `tools/VSTPLAYER.md.in`. Publicar desde un estado commiteado (avisa si hay
+cambios en lo que entra al exe) y después commitear `bin/win64` en carrilion (el script no commitea).
 
 `build.ps1` carga el entorno de MSVC (`dev-env.ps1`, vía vswhere + vcvars64) y hace configure + build
 con Ninja. **No borrar `build\` ni `build-debug\`** entre cambios: JUCE desde cero tarda varios

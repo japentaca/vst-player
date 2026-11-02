@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" shape-rendering="geometricPrecision">
+  <!-- VstPlayer icon, simplified for 16 and 32 px (same drawing as resources/icon.svg without
+       the thin details; shapes on the 2 px grid so the 16 px downscale stays sharp). -->
+  <rect x="0.5" y="0.5" width="31" height="31" rx="7" fill="#23262c" stroke="#3a3f48"/>
+  <!-- sound arcs -->
+  <g fill="none" stroke="#4aa3ff" stroke-width="2" opacity="0.7">
+    <path d="M5 11 A9 9 0 0 0 5 21"/>
+    <path d="M27 11 A9 9 0 0 1 27 21"/>
+  </g>
+  <!-- hanger + bell -->
+  <rect x="14" y="3" width="4" height="4" rx="1" fill="#9aa1ab"/>
+  <path d="M16 5 C 12 5 10 8 10 12 C 10 16 10 19 7 22 L 25 22 C 22 19 22 16 22 12 C 22 8 20 5 16 5 Z" fill="#4aa3ff"/>
+  <!-- waveform cut -->
+  <path d="M11 14 L13 14 L15 11 L17 17 L19 14 L21 14" fill="none" stroke="#1a1c20" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <!-- lip + clapper -->
+  <rect x="6" y="22" width="20" height="2" rx="1" fill="#e8e9eb"/>
+  <rect x="14" y="25" width="4" height="4" rx="2" fill="#e8e9eb"/>
+</svg>

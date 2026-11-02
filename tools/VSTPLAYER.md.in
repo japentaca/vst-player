@@ -1,0 +1,26 @@
+# VstPlayer.exe (Windows, 64 bits)
+
+Host de instrumentos VST3 que usa carrilion en Windows: recibe MIDI (puertos del sistema o la API
+local en `127.0.0.1:9471`, la opción "VstPlayer" de Midi Out) y toca plugins VST3 organizados en
+proyectos `*.vstproj.json`. También renderiza sin tiempo real:
+`VstPlayer.exe --render <proyecto> --midi <archivo.mid> --out <archivo.wav>`.
+
+Es **opcional** y **sólo para Windows**: carrilion funciona sin él.
+
+| | |
+|---|---|
+| Versión | {{VERSION}} |
+| Commit de vst-player | {{COMMIT}} |
+| Compilado | {{BUILD_DATE}} |
+| Tamaño | {{SIZE}} |
+| SHA-256 | `{{SHA256}}` |
+
+- **Sin instalador**: un solo `.exe` con el runtime de MSVC estático (no hace falta el
+  Visual C++ Redistributable). Windows 10/11 de 64 bits. Los datos de usuario van a
+  `%APPDATA%\VstPlayer\` (o a la carpeta de `--data-dir <dir>`).
+- **Actualizarlo**: no se edita a mano. En el repositorio vst-player:
+  `pwsh -NoProfile -File .\tools\publish-carrilion.ps1` (compila Release, copia el exe acá y
+  reescribe este archivo); después commitear `bin/win64` en carrilion.
+- **Licencia**: VstPlayer usa JUCE 8 bajo la licencia AGPLv3, así que VstPlayer se distribuye
+  también bajo AGPLv3. El código fuente correspondiente a este ejecutable (commit {{COMMIT_SHORT}})
+  es el del repositorio vst-player ({{SOURCE}}).

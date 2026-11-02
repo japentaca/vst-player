@@ -2,7 +2,10 @@
 // Driven by tools/run-api-test.ps1, which starts VstPlayer.exe --api-test with a temporary data
 // folder, runs this script and then closes the app (checking its exit code, assertions, leaks).
 //
-//   node tools/api-test.mjs --port 9479 [--token T] --examples <dir> --tmp <dir>
+//   node tools/api-test.mjs --port 9479 [--token T] --fixtures <dir> --tmp <dir>
+//
+// <dir> of --fixtures is tests/fixtures: test projects of their own (prueba-etapa5 with its three
+// stage-5 instances, plugin-faltante), independent of the editable examples/.
 //
 // Exit code 0 = every check passed. Prints one line per check plus the measurements.
 
@@ -11,7 +14,7 @@ const args = Object.fromEntries(
 
 const port = Number(args.port || 9479);
 const token = args.token || '';
-const examplesDir = args.examples;
+const examplesDir = args.fixtures;
 const tmpDir = args.tmp;
 const base = `http://127.0.0.1:${port}`;
 const q = token ? `?token=${encodeURIComponent(token)}` : '';
@@ -136,7 +139,7 @@ async function main() {
     // listProjects
     r = await http({ cmd: 'listProjects', dir: examplesDir });
     const names = (r.json.projects || []).map((p) => p.name);
-    check(r.json.ok && names.includes('prueba-etapa5') && names.includes('plugin-faltante'), 'listProjects de examples', names.join(', '));
+    check(r.json.ok && names.includes('prueba-etapa5') && names.includes('plugin-faltante'), 'listProjects de tests/fixtures', names.join(', '));
     r = await http({ cmd: 'listProjects', dir: examplesDir + sep + 'no-existe' });
     check(r.status === 404 && r.json.code === 'notFound', 'listProjects de una carpeta inexistente: 404');
 

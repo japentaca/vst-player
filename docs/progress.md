@@ -1351,3 +1351,65 @@ VstPlayer.exe --render <proyecto.vstproj.json> --midi <archivo.mid> --out <archi
   "Sampler"), y `run-api-test.ps1` espera las 3 de la etapa 5 (falla con 4 errores en HEAD sin este
   cambio). La suite de esta sección se corrió con la versión de la etapa 5 (32988de) en el árbol de
   trabajo; ese archivo no se toca en este commit (decide el usuario).
+
+## Después de v0.1.0 — Ícono y VstPlayer dentro de carrilion  (2026-11-01)
+
+VstPlayer pasa a ser parte de carrilion: el exe de Windows vive en el repositorio de carrilion
+(`bin/win64/VstPlayer.exe`), así quien usa carrilion en Windows ya lo tiene (etapa 2 del plan; la
+etapa 4 hará que el render de carrilion llame a ese exe).
+
+**Qué se hizo:**
+- **Ícono**: campana de carillón azul (acento del tema, `theme::accent`) con una forma de onda calada,
+  dos arcos de sonido, badajo y labio claros, sobre el cuadrado redondeado oscuro del tema
+  (`background` / `bar` / `outline`). Dos dibujos: `resources/icon.svg` (48 y 256 px) y
+  `resources/icon-small.svg` (16 y 32 px: sin degradés, formas en la grilla de 2 px, onda más simple).
+  `tools/render-icon.mjs` los rasteriza a `resources/icon-256.png` e `icon-32.png` con el Playwright +
+  Chromium de `carrilion/tools/render` (vst-player sigue sin dependencias de Node; `--preview` arma una
+  hoja con 256 / 48 / 32 / 16 px). `CMakeLists.txt`: `ICON_BIG` / `ICON_SMALL` en `juce_add_gui_app`;
+  JUCE genera el `.ico` (16 y 32 del chico, 48 y 256 del grande) y lo embebe en el exe.
+- Ventanas: JUCE registra su clase de ventana con `ExtractAssociatedIcon` (el ícono del exe), así que
+  la ventana principal, los diálogos, los editores de plugins y la barra de tareas lo toman solos. Pero
+  usa el tamaño grande también para el ícono chico, y la barra de título mostraba el dibujo grande
+  achicado: `MainWindow` cambia el `GCLP_HICONSM` de la clase (compartida por todas las ventanas de
+  JUCE) por el ícono del recurso `IDI_ICON1` al tamaño `SM_CXSMICON`, que sale del dibujo chico.
+- **Fixture propio para los tests**: `examples/prueba-etapa5.vstproj.json` lo edita el usuario con la
+  app (1e4ae93 lo guardó con 2 instancias y el árbol de trabajo tiene otra versión), y
+  `run-api-test.ps1` esperaba el contenido de la etapa 5. Ahora `tests/fixtures/` tiene
+  `prueba-etapa5.vstproj.json` (el de 32988de: Dexed, Pads = Surge XT, Sampler = sforzando, 3 rutas) y
+  `plugin-faltante.vstproj.json` (copia). `run-api-test.ps1` / `api-test.mjs` y `run-render-test.ps1` /
+  `render-test.mjs` reciben `--fixtures tests\fixtures` (antes `--examples examples`).
+  `ProjectRoundTripTest` comprueba los fixtures en modo estricto (sin advertencias, con instancias y
+  rutas) y todos los `examples/*.vstproj.json` sólo como "carga y round-trip estable".
+- **Publicación en carrilion**: `tools/publish-carrilion.ps1` (ASCII, PowerShell 5.1) compila Release
+  (`-SkipBuild` para no hacerlo), comprueba que la versión del exe coincida con `CMakeLists.txt`, copia el
+  exe a `..\carrilion\bin\win64\` (`-Target <carpeta>` para otro lugar) y escribe ahí `VSTPLAYER.md` desde
+  `tools/VSTPLAYER.md.in` (UTF-8): qué es, versión, commit de HEAD con su fecha, fecha de compilación,
+  tamaño, SHA-256, que no necesita instalador (runtime estático), cómo actualizarlo y la nota de
+  licencia (JUCE AGPLv3; el código es el repositorio vst-player: el remoto de git si hay, si no un
+  texto provisional; hoy no hay remoto). Avisa (y lo anota en `VSTPLAYER.md`) si hay cambios sin
+  commitear en lo que entra al exe. No commitea en carrilion.
+
+**Archivos:** `resources/` (nuevo: `icon.svg`, `icon-small.svg`, `icon-256.png`, `icon-32.png`),
+`tools/render-icon.mjs`, `tools/publish-carrilion.ps1`, `tools/VSTPLAYER.md.in` (nuevos),
+`tests/fixtures/` (nuevo), `CMakeLists.txt`, `src/app/MainWindow.cpp`, `tests/ProjectRoundTripTest.cpp`,
+`tools/{run-api-test.ps1,api-test.mjs,run-render-test.ps1,render-test.mjs}`, `README.md`, `CLAUDE.md`.
+
+**Verificación:**
+- Íconos de las ventanas leídos con Win32 mientras corre `--instance-selftest` (script aparte con
+  `EnumWindows` + `GetClassLongPtr`): la ventana principal y los editores de Dexed, Surge XT y sforzando
+  tienen el ícono grande (40 px a 125 %) y el chico (20 px, del dibujo chico); el ícono del archivo
+  (`ExtractAssociatedIcon` del exe) es el nuevo. La barra de tareas usa el de la clase.
+- El exe Release pesa ~6,9 MB (7,2 millones de bytes).
+- Build Release y Debug sin warnings. Suite completa, Release y Debug: `ctest` (110/110),
+  `--instance-selftest`, `--midi-selftest`, `run-project-test.ps1`, `run-ui-test.ps1`,
+  `run-api-test.ps1` (96/96, con `tests/fixtures`) y `run-render-test.ps1` (75/75): OK, 0 aserciones; en
+  Debug sólo las fugas conocidas de sforzando. `examples/prueba-etapa5.vstproj.json` no se tocó.
+- `publish-carrilion.ps1` probado a una carpeta temporal y después al repo de carrilion desde el commit
+  de esta sección.
+
+**Pendiente:**
+- Remoto público de vst-player: `VSTPLAYER.md` dice "sin remoto publicado todavía"; al crear el remoto,
+  volver a publicar para que la nota de licencia apunte al código.
+- carrilion (etapa 4): que su herramienta de render llame a `bin/win64/VstPlayer.exe --render`.
+- Cada publicación agrega ~7 MB al historial de git de carrilion; si se publica seguido, considerar
+  Git LFS o releases.

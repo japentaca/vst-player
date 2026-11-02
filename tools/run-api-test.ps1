@@ -66,7 +66,7 @@ try {
     else { "  FALLO escucha en: $($addresses -join ', ')"; $failed += 'netstat' }
 
     "---- api-test.mjs ----"
-    $nodeArgs = @((Join-Path $PSScriptRoot 'api-test.mjs'), '--port', "$Port", '--examples', (Join-Path $root 'examples'), '--tmp', $dir)
+    $nodeArgs = @((Join-Path $PSScriptRoot 'api-test.mjs'), '--port', "$Port", '--fixtures', (Join-Path $root 'tests\fixtures'), '--tmp', $dir)
     if ($Token) { $nodeArgs += @('--token', $Token) }
     & node @nodeArgs
     if ($LASTEXITCODE -ne 0) { $failed += 'api-test.mjs' }

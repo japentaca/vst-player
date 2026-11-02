@@ -19,10 +19,15 @@ include(juce)
 include(httplib)
 include(msvc-flags)
 
+# Icon: JUCE builds the .ico embedded in the exe from these PNGs (16 and 32 px from ICON_SMALL,
+# 48 and 256 px from ICON_BIG). Sources: resources/icon.svg and icon-small.svg; PNGs regenerated
+# with tools/render-icon.mjs. JUCE windows take the exe icon (window class), plugin editors too.
 juce_add_gui_app(VstPlayer
     PRODUCT_NAME "VstPlayer"
     COMPANY_NAME "Jape"
-    VERSION ${PROJECT_VERSION})
+    VERSION ${PROJECT_VERSION}
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/resources/icon-256.png"
+    ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/resources/icon-32.png")
 
 target_sources(VstPlayer PRIVATE
     src/Main.cpp

@@ -51,7 +51,7 @@ foreach ($name in 'recent.json', 'autosave.vstproj.json') { $appDataBefore[$name
 
 $failed = @()
 $t0 = Get-Date
-$nodeArgs = @((Join-Path $PSScriptRoot 'render-test.mjs'), '--exe', $exe, '--data-dir', $dataDir, '--examples', (Join-Path $root 'examples'), '--tmp', $workDir)
+$nodeArgs = @((Join-Path $PSScriptRoot 'render-test.mjs'), '--exe', $exe, '--data-dir', $dataDir, '--fixtures', (Join-Path $root 'tests\fixtures'), '--tmp', $workDir)
 if ($AllowedLeaks.Count -gt 0) { $nodeArgs += @('--allowed-leaks', ($AllowedLeaks -join ',')) }
 "Ejecutando: node $($nodeArgs -join ' ')"
 & node @nodeArgs

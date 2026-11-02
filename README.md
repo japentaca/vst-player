@@ -194,11 +194,21 @@ Requisitos: Visual Studio 2022 Build Tools con el workload de C++ (MSVC 19.3x o 
 pwsh -NoProfile -File .\tools\build.ps1                 # Release -> build\VstPlayer_artefacts\Release\VstPlayer.exe
 pwsh -NoProfile -File .\tools\build.ps1 -Config Debug   # Debug   -> build-debug\
 pwsh -NoProfile -File .\tools\package.ps1               # Release + dist\VstPlayer-<versión>-win64.zip
+pwsh -NoProfile -File .\tools\publish-carrilion.ps1     # Release + copia el exe a ..\carrilion\bin\win64
 ```
 
 La primera compilación tarda varios minutos (JUCE). Pruebas: `ctest --test-dir build` y los scripts
 `tools\run-*-test.ps1` (ver `CLAUDE.md`). ASIO: copiar el SDK de Steinberg en `third_party\asiosdk`
 (con `common\iasiodrv.h`) y recompilar; CMake lo detecta solo. Próximos pasos: `docs/roadmap.md`.
+
+**VstPlayer dentro de carrilion:** el repositorio de carrilion trae una copia del exe en
+`bin\win64\VstPlayer.exe` (con `VSTPLAYER.md`: versión, commit, fecha, licencia), así quien usa
+carrilion en Windows ya lo tiene. Para actualizarla: `tools\publish-carrilion.ps1` (compila Release,
+copia el exe y escribe `VSTPLAYER.md`; `-Target <carpeta>` si carrilion está en otro lado) y después
+commitear `bin/win64` en carrilion.
+
+**Ícono:** las fuentes son `resources\icon.svg` (48 px y más) y `resources\icon-small.svg` (16 y
+32 px); `node tools\render-icon.mjs` regenera los PNG que usa CMake (con el Playwright de carrilion).
 
 ## Licencia
 
