@@ -235,6 +235,8 @@ commitear `bin/win64` en carrilion.
 
 ## Licencia
 
-VstPlayer usa [JUCE](https://juce.com) bajo **AGPLv3** (uso personal / open source) y
-[cpp-httplib](https://github.com/yhirose/cpp-httplib) (MIT). VST es una marca de Steinberg Media
-Technologies GmbH.
+VstPlayer es software libre bajo la **GNU Affero General Public License v3.0** (ver `LICENSE`).
+Código fuente: <https://github.com/japentaca/vst-player>.
+
+Usa [JUCE](https://juce.com) bajo AGPLv3 y [cpp-httplib](https://github.com/yhirose/cpp-httplib)
+(MIT). VST es una marca de Steinberg Media Technologies GmbH.
