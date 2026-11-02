@@ -30,6 +30,11 @@ New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 
 $pluginsXml = Join-Path $env:APPDATA 'VstPlayer\plugins.xml'
 $pluginsHashBefore = if (Test-Path $pluginsXml) { (Get-FileHash $pluginsXml).Hash } else { '' }
+# The test re-scans (plugins.xml) and adds / removes a search folder (settings.xml): keep
+# byte-exact copies of both and put them back afterwards.
+$userFiles = @('plugins.xml', 'settings.xml') | ForEach-Object { Join-Path $env:APPDATA "VstPlayer\$_" }
+$backups = @{}
+foreach ($f in $userFiles) { if (Test-Path $f) { $backups[$f] = [System.IO.File]::ReadAllBytes($f) } }
 # JUCE's scanner leaves this (empty) "dead man's pedal" file after a GUI scan.
 $pedal = Join-Path $env:APPDATA 'VstPlayer\plugin-scan-in-progress.txt'
 $pedalExisted = Test-Path $pedal
@@ -47,6 +52,10 @@ if (Test-Path $pluginsXml) {
     $same = ((Get-FileHash $pluginsXml).Hash -eq $pluginsHashBefore)
     "plugins.xml igual que antes de la prueba: $same"
 }
+foreach ($f in $userFiles) {
+    if ($backups.ContainsKey($f)) { [System.IO.File]::WriteAllBytes($f, $backups[$f]) }
+}
+"plugins.xml y settings.xml restaurados a su contenido previo"
 if (-not $pedalExisted -and (Test-Path $pedal)) { Remove-Item $pedal }
 $leftovers = @('recent.json', 'autosave.vstproj.json') | Where-Object { Test-Path (Join-Path $env:APPDATA "VstPlayer\$_") }
 if ($leftovers.Count -gt 0) { "AVISO: hay archivos en %APPDATA%\VstPlayer: $($leftovers -join ', ')" }

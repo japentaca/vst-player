@@ -15,6 +15,14 @@ class AppSettings;
 //                                        Without --force, files already known are skipped.
 //   VstPlayer.exe --scan-one <file> <out.xml>
 //                                        internal: child process of the out-of-process scanner.
+//   VstPlayer.exe --plugin-folders       list the VST3 search folders (default + extra).
+//   VstPlayer.exe --add-plugin-folder <dir>
+//                                        add an extra search folder (settings.xml) and scan the
+//                                        search folders (new files only). Exit 0 if the folder was
+//                                        added or was already searched, 1 otherwise.
+//   VstPlayer.exe --remove-plugin-folder <dir>
+//                                        remove an extra folder and the plugins found only there
+//                                        from plugins.xml. Exit 0 if it was an extra folder.
 //   VstPlayer.exe --audio-selftest [--type "<device type>"]
 //                                        open the audio device with the saved setup and run the
 //                                        (silent) graph: blocks processed per second, prepareToPlay
@@ -39,6 +47,9 @@ enum class Mode
     gui,
     scan,
     scanChild,
+    pluginFolders,
+    addPluginFolder,
+    removePluginFolder,
     audioSelfTest,
     audioDevices,
     midiSend,
@@ -60,6 +71,7 @@ void installDebugOutputCapture();
 
 int runScan (const juce::StringArray& args, AppSettings& settings);
 int runScanChild (const juce::StringArray& args);
+int runPluginFolders (const juce::StringArray& args, AppSettings& settings);
 int runAudioSelfTest (const juce::StringArray& args, AppSettings& settings);
 int runAudioDevices();
 int runMidiSend (const juce::StringArray& args);

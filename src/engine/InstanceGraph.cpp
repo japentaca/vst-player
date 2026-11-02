@@ -302,11 +302,17 @@ void InstanceGraph::pluginCreated (const InstanceId& id, std::unique_ptr<juce::A
         auto& graph = engine.getGraph();
         const auto mixerId = engine.getMixerNodeId();
 
+        instance->midiMix = std::make_shared<MidiMixControls>();
+
         auto gain = std::make_unique<GainProcessor>();
         gain->setGainDb (instance->gainDb);
         gain->setMute (instance->mute);
+        gain->setMidiMix (instance->midiMix);
 
-        instance->midiNode = graph.addNode (std::make_unique<MidiSourceProcessor>(), std::nullopt, Graph::UpdateKind::async);
+        auto midiSource = std::make_unique<MidiSourceProcessor>();
+        midiSource->setMidiMix (instance->midiMix);
+
+        instance->midiNode = graph.addNode (std::move (midiSource), std::nullopt, Graph::UpdateKind::async);
         instance->pluginNode = graph.addNode (std::move (plugin), std::nullopt, Graph::UpdateKind::async);
         instance->gainNode = graph.addNode (std::move (gain), std::nullopt, Graph::UpdateKind::async);
 

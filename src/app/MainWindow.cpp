@@ -202,7 +202,18 @@ void MainWindow::confirmDiscardThen (std::function<void()> next)
 
 void MainWindow::requestQuit()
 {
-    confirmDiscardThen ([] { juce::JUCEApplication::getInstance()->quit(); });
+    juce::Component::SafePointer<MainWindow> safeThis (this);
+
+    confirmDiscardThen ([safeThis]
+    {
+        // Close the plugin list while the message loop still runs: its "Scan complete" box
+        // (JUCE, shown when a file failed to scan) is deleted asynchronously when dismissed, and
+        // after quit() that would never happen (leaked window at shutdown).
+        if (safeThis != nullptr)
+            safeThis->pluginListWindow = nullptr;
+
+        juce::JUCEApplication::getInstance()->quit();
+    });
 }
 
 void MainWindow::newProject()

@@ -15,10 +15,10 @@
 //   await vp.panic()
 //   await vp.loadProject('C:\\Users\\me\\Documents\\pads.vstproj.json')
 //
-// Integration idea for carrilion (apps/web/lib/engine/midi-out.js) -- NOT applied there:
-// MidiOut talks to a "port" { now(), on(ch, note, velocity, time), off(ch, note, time), all_off() }.
-// vstPlayerPort() below is such a port, so carrilion could play straight into a VstPlayer
-// instance over the WebSocket instead of through loopMIDI:
+// carrilion has its own port now (apps/web/lib/core/vstplayer-port.js, "VstPlayer" in its Midi Out
+// selector: applies VstPlayer's MIDI routes and sends CC7 / CC10). vstPlayerPort() below is the
+// simpler form (one instance, no routes) of a MidiOut port { now(), on(ch, note, velocity, time),
+// off(ch, note, time), all_off() }:
 //
 //   import { connect, vstPlayerPort } from './carrilion-client.js'
 //   const vp = await connect()

@@ -8,11 +8,14 @@ namespace vstplayer
 class AppSettings;
 class PluginManager;
 
-// "Plugins…" dialog: JUCE PluginListComponent (scan, remove, blacklist) with a table showing
-// name, manufacturer, version, instrument yes/no, category and path, plus a "Escanear" button.
-// The scan folder list shown by the scan dialog is seeded from PluginManager::getSearchPath();
-// any folder the user adds there is stored back as an extra folder when the window closes.
-// Scanning runs on background threads, each probe in a child process (see PluginManager).
+// "Plugins…" dialog:
+// - "Carpetas de búsqueda" panel: the default VST3 folders (fixed) plus the extra folders from
+//   settings, with "Agregar carpeta…" (folder chooser; the new folder is scanned right away)
+//   and "Quitar carpeta" (also drops the plugins found only there from the list).
+// - JUCE PluginListComponent (remove, blacklist, options) with a table showing name,
+//   manufacturer, version, instrument yes/no, category and path.
+// - "Escanear": scans every .vst3 under the search folders (new or changed files only), without
+//   JUCE's folder dialog. Background thread, each probe in a child process (see PluginManager).
 class PluginListWindow final : public juce::DocumentWindow
 {
 public:
@@ -21,17 +24,25 @@ public:
 
     void closeButtonPressed() override;
 
-    // Same as pressing "Escanear" (opens the folder chooser, then scans).
+    // Same as pressing "Escanear".
     void startScan();
-    // Scans exactly these files, without the folder chooser (tests). Background threads, with
-    // JUCE's progress window.
+    // Scans exactly these files (tests). Background threads, with JUCE's progress window.
     void scanFiles (const juce::StringArray& files);
     bool isScanning() const;
 
+    // Same as choosing `folder` with "Agregar carpeta…" (tests): adds it and, if added,
+    // scans it. Returns true if the folder was added.
+    bool addFolder (const juce::File& folder);
+    // Same as selecting `folder` and pressing "Quitar carpeta". Returns the number of list
+    // entries removed, or -1 if it is not an extra folder.
+    int removeFolder (const juce::File& folder);
+    // Rows of the folder panel (default + extra folders) and the status line under the table.
+    int getNumFolderRows() const;
+    juce::String getStatusText() const;
+
 private:
     class Content;
-
-    void syncExtraFolders();
+    Content* getContent() const;
 
     PluginManager& plugins;
     AppSettings& settings;

@@ -327,6 +327,15 @@ private:
                 break;
             }
 
+            case cli::Mode::pluginFolders:
+            case cli::Mode::addPluginFolder:
+            case cli::Mode::removePluginFolder:
+            {
+                AppSettings cliSettings;
+                exitCode = cli::runPluginFolders (args, cliSettings);
+                break;
+            }
+
             case cli::Mode::audioSelfTest:
             {
                 AppSettings cliSettings;

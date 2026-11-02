@@ -82,7 +82,10 @@ ctest --test-dir build ; ctest --test-dir build-debug                       # ro
 - Necesitan loopMIDI corriendo con "loopMIDI Port", los plugins Dexed, Surge XT y sforzando, y una
   salida de audio. Lo que requiere oír o tocar desde carrilion queda como verificación manual.
 - Herramientas de diagnóstico: `--midi-ports`, `--midi-monitor`, `--midi-send`, `--audio-devices`,
-  `--audio-selftest`, `--scan`.
+  `--audio-selftest`, `--scan`, `--plugin-folders`, `--add-plugin-folder`, `--remove-plugin-folder`.
+- Carpetas de búsqueda de plugins: las estándar de VST3 (fijas) + `pluginExtraFolders` en
+  `settings.xml`, manejadas por `PluginManager` (agregar / quitar / validar). El escaneo desde la UI
+  pasa la lista de archivos a `PluginListComponent::scanFor`, sin el diálogo de carpetas de JUCE.
 
 ## Convenciones y reglas de hilos
 

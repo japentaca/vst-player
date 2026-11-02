@@ -74,12 +74,14 @@ Proyecto, audio, instancias y rutas.
    "audio":{"deviceType":"Windows Audio","device":"Altavoces (...)","sampleRate":48000.0,"bufferSize":480,"outputLatencyMs":10.0,"cpu":2.1},
    "instances":[{"id":"5a1e...","name":"Pads","state":"ready",
                  "plugin":{"name":"Surge XT","manufacturer":"Surge Synth Team","version":"1.3.4","format":"VST3","fileOrIdentifier":"C:\\...","uniqueId":"190e4fbd","isInstrument":true},
-                 "gainDb":-12.0,"mute":false,"editorOpen":false,"numParams":2855,"numPrograms":0,
+                 "gainDb":-12.0,"mute":false,"midiMix":{"volume":102,"pan":64},"editorOpen":false,"numParams":2855,"numPrograms":0,
                  "midiRoutes":[{"inputDevice":"loopMIDI Port","channels":[2,3],"instanceId":"5a1e...","channelMode":{"remapTo":1}}]}],
    "midiRoutes":[...],
    "api":{"host":"127.0.0.1","port":9471,"clients":1,"version":1,"app":"0.1.0"}}
 ```
-`state`: `loading`, `ready`, `failed` (con `error`), `missing` (plugin no instalado). `currentProgram`
+`state`: `loading`, `ready`, `failed` (con `error`), `missing` (plugin no instalado). `midiMix`: los
+últimos CC7 (volumen) y CC10 (pan) que recibió la instancia, `null` si todavía no llegó ninguno (ver
+"Volumen y pan por MIDI"). `currentProgram`
 y `programName` aparecen si el plugin tiene programas.
 
 ### `loadProject`
@@ -195,16 +197,33 @@ enciende el LED de la fila (que muestra lo que llega por los puertos).
 ### `levels` / `audioStats` (diagnóstico)
 ```json
 {"cmd":"levels"}
-→ {"ok":true,"instances":[{"instanceId":"...","name":"Dexed","peakDb":-40.9,"blocks":12345}],"masterPeakDb":-40.9}
+→ {"ok":true,"instances":[{"instanceId":"...","name":"Dexed","peakDb":-40.9,"peakDbL":-40.9,"peakDbR":-41.2,"blocks":12345}],"masterPeakDb":-40.9}
 {"cmd":"audioStats"}
 → {"ok":true,"sampleRate":48000.0,"bufferSize":480,"cpu":2.1,"xruns":0,"callbacks":1002,"totalCallbacks":53000,
    "callbackAvgMs":0.21,"callbackMaxMs":1.1,"blockMs":10.0,"overBudget":0,"graphNodes":11,"mixerBlocks":53000}
 ```
-`levels`: pico (dBFS, −100 = silencio) en el nodo de ganancia de cada instancia y en la mezcla **desde
+`levels`: pico (dBFS, −100 = silencio; `peakDbL` / `peakDbR` por canal) en el nodo de ganancia de cada instancia y en la mezcla **desde
 la consulta anterior**. `audioStats`: callbacks de audio desde la consulta anterior, tiempo medio y
 máximo del callback completo (todo el grafo), cuántos superaron la duración del bloque, xruns que
 reporta el driver (`AudioDeviceManager::getXRunCount`, −1 si no los cuenta), CPU y `graphNodes`
 (nodos del grafo de audio: 3 por instancia cargada + mezcla + salida de audio).
+
+## Volumen y pan por MIDI (CC7 / CC10)
+
+Los controladores **CC7 (volumen)** y **CC10 (pan)** que llegan a una instancia, por cualquier canal y
+por cualquier camino (puertos MIDI o el comando `midi`), los aplica **VstPlayer** en el nodo de
+ganancia de la instancia y **no llegan al plugin** (así suenan igual en todos los plugins, y los que
+también los respetan, como sforzando, no atenúan dos veces):
+
+- Volumen: ganancia lineal `valor / 127` (127 = 0 dB, 64 ≈ −6 dB, 0 = silencio), multiplicada por la
+  ganancia de la fila (que queda como ajuste fino).
+- Pan: 0 = izquierda, 64 = centro, 127 = derecha; balance estéreo como el `StereoPannerNode` de Web
+  Audio (el panorámico de carrilion), así un canal queda ubicado igual en los dos.
+- Cambios suavizados en 20 ms (sin clicks). Antes del primer CC: 0 dB y centro. No se guardan en el
+  proyecto (son estado MIDI: quien los manda los vuelve a mandar; carrilion lo hace al conectarse y
+  cuando VstPlayer abre un proyecto). Pánico no los cambia.
+- Una instancia tiene **un solo** volumen y pan: si dos canales llegan a la misma instancia (p. ej.
+  rutas 2 y 3 → Pads), gana el último CC que llegó.
 
 ## Eventos (sólo WebSocket)
 

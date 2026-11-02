@@ -2,11 +2,14 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <memory>
+
 namespace vstplayer
 {
 
 class GainProcessor;
 class MidiSourceProcessor;
+struct MidiMixControls;
 
 using InstanceId = juce::String; // UUID, dashed form
 
@@ -36,6 +39,8 @@ struct Instance
 
     float gainDb = 0.0f;
     bool mute = false;
+    // CC7 / CC10 received (shared by midiNode and gainNode; new with every set of nodes).
+    std::shared_ptr<MidiMixControls> midiMix;
 
     // Editor window state, kept while the window is closed so it reopens in the same place.
     struct EditorWindowState

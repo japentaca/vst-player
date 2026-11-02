@@ -93,6 +93,9 @@ struct UiTestState
     int pluginTypesBefore = 0;
     juce::StringArray scanFiles;
     bool progressSeenDuringScan = false;
+    juce::File extraFolder;
+    juce::String extraFoldersBefore;
+    int blacklistedBefore = 0;
     int scanGapChecks = 0;
     int savedFileWrites = 0;
     juce::Time savedTime;
@@ -175,6 +178,7 @@ bool saveScreenshot (juce::Component& window, const juce::File& file)
 
 // Problems of a laid-out component tree: children outside their parent, overlapping visible
 // siblings, controls too small, button texts that do not fit (they would be squeezed or wrapped).
+// The inside of JUCE list boxes is not checked (their rows and header are JUCE's own layout).
 void checkLayout (juce::Component& c, juce::StringArray& problems, const juce::String& path)
 {
     const auto describe = [] (juce::Component& comp)
@@ -235,7 +239,10 @@ void checkLayout (juce::Component& c, juce::StringArray& problems, const juce::S
                 problems.add (name + ": el texto no entra (" + juce::String (needed, 0) + " px de " + juce::String (available, 0) + ")");
         }
 
-        checkLayout (*child, problems, name);
+        // A ListBox / TableListBox lays out its own rows (recycled rows are parked outside the
+        // visible area, the table header follows the scrollbar): not ours to check inside.
+        if (dynamic_cast<juce::ListBox*> (child) == nullptr)
+            checkLayout (*child, problems, name);
     }
 
     for (int i = 0; i < visibleChildren.size(); ++i)
@@ -926,6 +933,96 @@ void InstanceSelfTest::buildUiSteps()
         plugins.save();
 
         if (auto* w = window.getPluginListWindow())
+            w->closeButtonPressed();
+
+        return ok;
+    });
+
+    //==============================================================================
+    // Search folders panel: add a folder with a broken .vst3 (it gets scanned right away and
+    // blacklisted), screenshot + layout of the window, then remove it (the blacklisted entry
+    // goes away). The extra folders setting is restored at the end whatever happens.
+    action ("Carpetas de busqueda: agregar una carpeta extra (se escanea sola)", [this, &s]
+    {
+        s.extraFolder = s.dir.getChildFile ("carpeta VST3 extra");
+        s.extraFolder.createDirectory();
+        s.extraFolder.getChildFile ("Roto.vst3").replaceWithText ("no es un plugin");
+        s.extraFoldersBefore = plugins.getExtraFolders().toString();
+        s.blacklistedBefore = plugins.getKnownPluginList().getBlacklistedFiles().size();
+
+        window.showPluginList();
+        auto* w = window.getPluginListWindow();
+
+        if (w == nullptr)
+            return check (false, "ventana de plugins abierta");
+
+        const auto rowsBefore = w->getNumFolderRows();
+        const auto added = w->addFolder (s.extraFolder);
+        auto ok = check (added, "carpeta agregada: " + w->getStatusText());
+        ok = check (w->isScanning(), "escaneo de la carpeta nueva en curso") && ok;
+        ok = check (w->getNumFolderRows() == rowsBefore + 1, "una fila mas en el panel de carpetas ("
+                    + juce::String (w->getNumFolderRows()) + ")") && ok;
+        ok = check (plugins.getExtraFolders().toString().contains (s.extraFolder.getFullPathName()),
+                    "guardada en settings (pluginExtraFolders)") && ok;
+        return ok;
+    });
+
+    waitFor ("esperar el escaneo de la carpeta nueva", [this]
+    {
+        return window.getPluginListWindow() == nullptr || ! window.getPluginListWindow()->isScanning();
+    }, 60.0);
+
+    action ("El archivo roto de la carpeta nueva quedo desactivado; carpetas repetidas o del sistema se rechazan", [this, &s]
+    {
+        const auto blacklisted = plugins.getKnownPluginList().getBlacklistedFiles();
+        auto ok = check (blacklisted.contains (s.extraFolder.getChildFile ("Roto.vst3").getFullPathName()),
+                         "Roto.vst3 en la lista de desactivados (" + juce::String (blacklisted.size()) + ")");
+        auto* w = window.getPluginListWindow();
+
+        if (w == nullptr)
+            return check (false, "ventana de plugins abierta");
+
+        const auto rows = w->getNumFolderRows();
+        const auto again = w->addFolder (s.extraFolder);
+        ok = check (! again && w->getStatusText().startsWith ("Ya se busca"), "la misma carpeta otra vez: " + w->getStatusText()) && ok;
+        const auto root = w->addFolder (juce::File ("C:\\"));
+        ok = check (! root && w->getStatusText().startsWith ("No se puede"), "la raiz del disco: " + w->getStatusText()) && ok;
+        ok = check (w->getNumFolderRows() == rows && ! w->isScanning(), "sin filas nuevas ni escaneo") && ok;
+        return ok;
+    });
+
+    action ("Captura y layout de la ventana de plugins", [this, &s]
+    {
+        auto* w = window.getPluginListWindow();
+
+        if (w == nullptr)
+            return check (false, "ventana de plugins abierta");
+
+        auto ok = check (saveScreenshot (*w, s.dir.getChildFile ("09-plugins-carpetas.png")), "captura 09-plugins-carpetas.png");
+        juce::StringArray problems;
+
+        if (auto* c = w->getContentComponent())
+            checkLayout (*c, problems, "PluginListWindow");
+
+        for (auto& p : problems)
+            cli::print ("    " + p);
+
+        return check (problems.isEmpty(), "ventana de plugins: " + juce::String (problems.size()) + " problemas de layout") && ok;
+    });
+
+    action ("Quitar la carpeta extra: se van sus entradas de la lista", [this, &s]
+    {
+        auto* w = window.getPluginListWindow();
+        const auto removed = w != nullptr ? w->removeFolder (s.extraFolder) : -1;
+        const auto status = w != nullptr ? w->getStatusText() : juce::String();
+        auto ok = check (removed == 1, "1 entrada quitada (" + juce::String (removed) + "): " + status);
+        ok = check (plugins.getKnownPluginList().getBlacklistedFiles().size() == s.blacklistedBefore, "desactivados como antes") && ok;
+        ok = check (plugins.getExtraFolders().toString() == s.extraFoldersBefore, "carpetas extra como antes") && ok;
+
+        // Restore whatever happened above.
+        plugins.setExtraFolders (juce::FileSearchPath (s.extraFoldersBefore));
+
+        if (w != nullptr)
             w->closeButtonPressed();
 
         return ok;

@@ -30,10 +30,19 @@ sintes nativos sin cambiar nada de su lado. Además expone una **API local** (HT
 2. Ejecutar `VstPlayer.exe`. La primera vez Windows SmartScreen puede avisar que el programa no está
    firmado: "Más información" → "Ejecutar de todas formas".
 3. **Escanear los plugins** (la primera vez y cada vez que instales plugins nuevos): botón
-   **Plugins…** (arriba a la derecha) → **Escanear** → confirmar las carpetas → **Escanear**. La barra de
-   estado dice "Escaneando plugins…"; al terminar, la lista muestra nombre, fabricante y versión.
-   Mientras no haya plugins escaneados, la barra de estado lo recuerda.
+   **Plugins…** (arriba a la derecha) → **Escanear**. La barra de estado dice "Escaneando plugins…"; al
+   terminar, la lista muestra nombre, fabricante y versión. Sólo se prueban los archivos nuevos o
+   cambiados. Mientras no haya plugins escaneados, la barra de estado lo recuerda.
    Alternativa desde una consola: `VstPlayer.exe --scan`.
+   - **Carpetas de búsqueda**: arriba en la misma ventana. Siempre se buscan las dos carpetas estándar
+     de VST3 (`C:\Program Files\Common Files\VST3` y `%LOCALAPPDATA%\Programs\Common\VST3`), con sus
+     subcarpetas. Si tenés plugins en otro lado (otro disco, una carpeta propia), **Agregar carpeta…**
+     la suma a la lista y la escanea en el momento. **Quitar carpeta** la saca y quita de la lista los
+     plugins que estaban sólo ahí (un proyecto que los use los va a mostrar como faltantes).
+   - Una carpeta agregada que no existe en ese momento (un disco externo desconectado) se conserva y
+     se marca "no existe ahora"; se vuelve a usar cuando aparece.
+   - No se aceptan la raíz de un disco, `C:\Windows`, `Program Files` ni la carpeta del usuario (se
+     recorrería el disco entero), ni una carpeta que ya esté cubierta por otra de la lista.
 4. Opcional: asociar los proyectos con VstPlayer (sólo para tu usuario, sin administrador):
    `powershell -ExecutionPolicy Bypass -File .\tools\register-filetype.ps1`
    Agrega "Abrir en VstPlayer" al menú contextual de los `*.vstproj.json` (en Windows 11, dentro de
@@ -82,6 +91,14 @@ Si se borra y se vuelve a crear el puerto en loopMIDI con la app abierta, la fil
 "(desconectado)" y se reconecta sola a los ~2 s (Chrome puede necesitar que se vuelva a elegir el
 puerto).
 
+**Sin loopMIDI:** en el selector Midi Out de carrilion, la opción **VstPlayer** toca por la API local
+(WebSocket) con las mismas rutas del proyecto. Se reconecta sola si VstPlayer se abre después.
+
+**Volumen y pan:** carrilion manda el volumen y el pan de cada canal como CC7 / CC10 por su canal MIDI
+(por cualquiera de los dos caminos) y VstPlayer los aplica en la instancia que recibe ese canal, encima
+de la ganancia de la fila: el control de la fila queda como ajuste fino. Detalle en
+[`docs/api.md`](docs/api.md) ("Volumen y pan por MIDI").
+
 ## Formato de proyecto
 
 JSON versionado (`"version": 1`) con el audio, las instancias (plugin, nombre, ganancia, mute, estado
@@ -126,6 +143,9 @@ compilar con el SDK de Steinberg (ver "Cómo compilar").
 |---|---|
 | `VstPlayer.exe [proyecto.vstproj.json]` | abre la app (y el proyecto) |
 | `--scan [--force]` | escanea los plugins, escribe `plugins.xml` y sale |
+| `--plugin-folders` | lista las carpetas de búsqueda de VST3 (estándar y agregadas) |
+| `--add-plugin-folder <carpeta>` | agrega una carpeta de búsqueda y escanea lo nuevo |
+| `--remove-plugin-folder <carpeta>` | quita una carpeta agregada y sus plugins de la lista |
 | `--data-dir <carpeta>` | usa esa carpeta en lugar de `%APPDATA%\VstPlayer` (settings, plugins, recientes, autoguardado); corre como una instancia independiente |
 | `--api-port <n>`, `--api-token <t>`, `--no-api` | configuración de la API para esta ejecución |
 | `--midi-ports`, `--midi-monitor [s]`, `--midi-send "<puerto>" 90:3C:64 +100 80:3C:00` | diagnóstico MIDI (listar, escuchar, enviar) |

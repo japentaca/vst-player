@@ -1165,3 +1165,96 @@ cambiados `CMakeLists.txt`, `src/Main.cpp`, `src/app/MainWindow.{h,cpp}`, `src/a
 - El ejecutable no está firmado (SmartScreen avisa la primera vez).
 - Pendientes de etapas anteriores sin cambios: ver `docs/roadmap.md` (valores viejos de parámetros, VST3
   creado en el hilo de UI, fuga de sforzando, buffer 480 de WASAPI compartido / ASIO).
+
+## Después de v0.1.0 — Carpetas de búsqueda de plugins  (2026-11-01)
+
+**Hecho:** pedido del usuario: poder agregar más carpetas donde buscar VST3.
+- Antes ya existían carpetas extra (`pluginExtraFolders` en `settings.xml`), pero sólo se editaban en el
+  diálogo de JUCE que aparecía al tocar "Escanear". Además había un bug: una carpeta extra que no
+  existía al abrir la ventana (disco externo desconectado) se borraba de la configuración al cerrarla,
+  porque el diálogo se sembraba sólo con carpetas existentes y al cerrar se guardaba esa lista.
+- Ventana **Plugins VST3**: panel "Carpetas de búsqueda" arriba de la tabla. Muestra las dos carpetas
+  estándar de VST3 (fijas, "predeterminada") y las agregadas; marca "no existe ahora" en naranja.
+  - **Agregar carpeta…**: selector de carpetas; la carpeta se guarda y se escanea en el momento.
+  - **Quitar carpeta** (sólo agregadas): la saca y quita de la lista de plugins las entradas (plugins y
+    desactivados) que estaban dentro y que ninguna otra carpeta cubre.
+  - Se rechazan: carpeta inexistente, raíz de disco, `C:\Windows` y subcarpetas, `Program Files`,
+    `Program Files (x86)`, `Common Files`, la carpeta del usuario y `C:\Users`, y carpetas ya cubiertas
+    (igual, dentro de otra o que contiene a otra; la búsqueda es recursiva).
+  - **Escanear** ya no abre el diálogo de carpetas de JUCE: busca los `.vst3` de las carpetas
+    configuradas y le pasa la lista a `PluginListComponent::scanFor`. Sólo se prueban los nuevos o
+    cambiados. La clave vieja `lastPluginScanPath_VST3` se borra de `settings.xml` al arrancar.
+- Línea de comandos: `--plugin-folders`, `--add-plugin-folder <dir>` (agrega y escanea lo nuevo),
+  `--remove-plugin-folder <dir>`.
+- Corregido de paso:
+  - En la tabla de plugins, "Desactivado (falló al escanear)" se veía como "fallÃ³" (literal sin UTF-8).
+  - Si al cerrar la app quedaba abierto el aviso "Scan complete" de JUCE (aparece cuando un archivo
+    falla al escanear), la ventana del aviso se perdía al salir (fugas `VBlankDispatcher`, `DirectX`,
+    `SharedResourcePointer` y aserciones de `DeletedAtShutdown` en Debug): JUCE la borra de forma
+    asíncrona y el bucle de mensajes ya había terminado. Ahora `MainWindow::requestQuit` destruye la
+    ventana de plugins antes de `quit()`.
+- Tests: el verificador de layout del test de UI no entra en `ListBox`/`TableListBox` (JUCE estaciona
+  filas recicladas fuera del área visible: 24 falsos positivos). `run-ui-test.ps1` ahora guarda y
+  restaura byte a byte `plugins.xml` y `settings.xml` del usuario.
+
+**Archivos:** `src/engine/PluginManager.{h,cpp}`, `src/ui/PluginListWindow.{h,cpp}`,
+`src/app/CommandLine.{h,cpp}`, `src/Main.cpp`, `src/app/MainWindow.cpp`, `src/app/UiSelfTest.cpp`,
+`tools/run-ui-test.ps1`, `README.md`, `CLAUDE.md`, `docs/progress.md`.
+
+**Verificación:**
+- Build Release y Debug sin warnings de nuestro código.
+- Línea de comandos con `--data-dir` temporal y una carpeta "Mis VST3 extra" con una copia de Dexed en
+  una subcarpeta y un `Roto.vst3` vacío:
+  - `--add-plugin-folder`: "2 archivos nuevos probados, 1 plugins nuevos, 1 desactivados" (8 plugins).
+  - `C:\`, `C:\Program Files` y una carpeta inexistente: rechazadas con exit 1. La subcarpeta: "Ya se
+    busca…", exit 0, sin cambios.
+  - Carpeta renombrada (simula disco desconectado): `--plugin-folders` la lista "(no existe)"; abrir y
+    cerrar la GUI (`--show-plugins`, WM_CLOSE, exit 0) la conserva en `settings.xml`.
+  - `--remove-plugin-folder`: "2 entradas quitadas", vuelve a 7 plugins y 0 desactivados.
+- `run-ui-test.ps1` (Release): 85 pasos OK, incluidos los nuevos (agregar carpeta → escaneo automático →
+  `Roto.vst3` desactivado; repetida y `C:\` rechazadas; captura `09-plugins-carpetas.png` revisada;
+  layout 0 problemas; quitar → desactivados y carpetas como antes). `plugins.xml` igual que antes.
+- Release: `ctest`, `--instance-selftest`, `--midi-selftest`, `run-project-test.ps1`, `run-api-test.ps1`: OK.
+- Debug `run-ui-test.ps1`: 0 aserciones y sólo la fuga conocida de sforzando (antes del arreglo de
+  `requestQuit`: 2 aserciones y 3 clases con fuga más). Falla un único paso **previo**: "la UI siguió
+  respondiendo durante el escaneo" con hueco máximo ~296 ms (límite 250). La versión commiteada
+  (v0.1.0), compilada en Debug en esta misma máquina, da lo mismo (296 y 308 ms en dos corridas), así
+  que no lo causa este cambio; en la etapa 6 daba 161 ms. En Release el hueco es 28 ms (igual que antes).
+
+**Pendiente / problemas:**
+- Verificación manual: abrir "Plugins…", **Agregar carpeta…** con el selector real de Windows y ver que
+  escanea; **Quitar carpeta**.
+- El test de responsividad del escaneo en Debug supera el límite de 250 ms en esta máquina (previo).
+- Plugins con el mismo nombre en dos carpetas (p. ej. una copia de Dexed) aparecen dos veces en la
+  lista, cada uno con su ruta.
+- El zip de `dist\` es de v0.1.0 y no incluye este cambio (regenerar con `tools\package.ps1`).
+
+## Después de v0.1.0 — Volumen y pan por MIDI (CC7 / CC10) y salida "VstPlayer" de carrilion  (2026-11-01)
+
+**Qué se hizo:**
+- Cada instancia aplica **CC7 (volumen)** y **CC10 (pan)** en su nodo de ganancia, por cualquier canal y
+  camino (puertos o API), y esos dos controladores **no llegan al plugin**. `MidiMixControls` (nuevo,
+  `src/engine/MidiMixControls.h`) los comparten `MidiSourceProcessor` (los saca del bloque MIDI en el
+  hilo de audio, sin asignar memoria: buffer reservado en `prepareToPlay`) y `GainProcessor` (ganancia de
+  la fila × CC7/127; pan como el `StereoPannerNode` de Web Audio; suavizado de 20 ms). Sin CC: 0 dB y
+  centro. No se guardan en el proyecto; pánico no los toca. Una instancia tiene un solo volumen/pan: si
+  le llegan dos canales, gana el último CC.
+- API: `status` informa `midiMix` (`volume` / `pan`, `null` sin CC) por instancia; `levels` agrega
+  `peakDbL` / `peakDbR`. Doc: `docs/api.md` "Volumen y pan por MIDI"; README.
+- carrilion (rama `feature/vstplayer-out`, en su repo): opción **VstPlayer** en Midi Out
+  (`apps/web/lib/core/vstplayer-port.js`: WebSocket, aplica las rutas MIDI de VstPlayer, reconecta) y
+  envío de CC7 / CC10 de cada canal (al armar la voz, al mover volumen/pan, al cambiar de canal MIDI, al
+  cambiar de puerto y cuando VstPlayer se reconecta o abre un proyecto). Sirve también por loopMIDI.
+- `examples/carrilion-client.js`: el comentario ya no dice que carrilion no está integrado.
+
+**Verificación:**
+- `run-api-test.ps1`: 6 comprobaciones nuevas (CC7 = 0 silencia; CC10 = 0 / 127 deja un solo lado en
+  −100 dBFS; CC7 = 64 baja −5,95 dB exactos; `midiMix` en `status`). 96/96 en Release y Debug.
+- Suite completa en Release y Debug (ctest, `--instance-selftest`, `--midi-selftest`, proyectos, UI,
+  API): OK, sin warnings, aserciones ni fugas fuera de las permitidas. El paso de responsividad del
+  escaneo en Debug pasó esta vez.
+- carrilion: 697 tests (`npm run test:web`), con nuevos de `MidiOut` (CC), de la voz y del puerto.
+
+**Pendiente:**
+- Verificación manual de oído con carrilion tocando (volumen y pan de los canales en Dexed y Surge XT).
+- La fila no muestra el volumen/pan MIDI recibido (sólo `status` de la API y los vúmetros L/R).

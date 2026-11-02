@@ -593,6 +593,14 @@ juce::var ApiController::describeInstance (const Instance& instance) const
 
     o->setProperty ("gainDb", instance.gainDb);
     o->setProperty ("mute", instance.mute);
+
+    // CC7 / CC10 received (null = none yet: unity, center).
+    auto mix = new Obj();
+    const auto volumeCc = instance.midiMix != nullptr ? instance.midiMix->volumeCc.load() : -1;
+    const auto panCc = instance.midiMix != nullptr ? instance.midiMix->panCc.load() : -1;
+    mix->setProperty ("volume", volumeCc >= 0 ? juce::var (volumeCc) : juce::var());
+    mix->setProperty ("pan", panCc >= 0 ? juce::var (panCc) : juce::var());
+    o->setProperty ("midiMix", juce::var (mix));
     o->setProperty ("editorOpen", instance.window.open);
 
     if (auto* p = instance.getPlugin(); p != nullptr && instance.isReady())
@@ -1076,7 +1084,11 @@ void ApiController::cmdLevels (const juce::var&, const Responder& respond)
             auto o = new Obj();
             o->setProperty ("instanceId", instance->id);
             o->setProperty ("name", instance->name);
-            o->setProperty ("peakDb", toDb (gain->getAndResetPeak()));
+            float left = 0.0f, right = 0.0f;
+            gain->getAndResetPeaks (left, right);
+            o->setProperty ("peakDb", toDb (juce::jmax (left, right)));
+            o->setProperty ("peakDbL", toDb (left));
+            o->setProperty ("peakDbR", toDb (right));
             o->setProperty ("blocks", gain->getBlocksProcessed());
             instances.add (juce::var (o));
         }

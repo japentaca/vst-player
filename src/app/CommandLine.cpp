@@ -63,6 +63,15 @@ Mode detectMode (const juce::StringArray& args)
     if (args.contains ("--scan"))
         return Mode::scan;
 
+    if (args.contains ("--plugin-folders"))
+        return Mode::pluginFolders;
+
+    if (args.contains ("--add-plugin-folder"))
+        return Mode::addPluginFolder;
+
+    if (args.contains ("--remove-plugin-folder"))
+        return Mode::removePluginFolder;
+
     if (args.contains ("--audio-selftest"))
         return Mode::audioSelfTest;
 
@@ -193,6 +202,92 @@ int runScan (const juce::StringArray& args, AppSettings& settings)
     settings.flush();
 
     return saved ? 0 : 1;
+}
+
+int runPluginFolders (const juce::StringArray& args, AppSettings& settings)
+{
+    PluginManager manager (settings);
+
+    const auto printFolders = [&manager]
+    {
+        const auto defaults = manager.getDefaultFolders();
+        const auto extras = manager.getExtraFolders();
+        print ("Carpetas de busqueda VST3:");
+
+        for (int i = 0; i < defaults.getNumPaths(); ++i)
+            print ("  [predeterminada] " + defaults[i].getFullPathName() + (defaults[i].isDirectory() ? "" : "  (no existe)"));
+
+        for (int i = 0; i < extras.getNumPaths(); ++i)
+            print ("  [extra]          " + extras[i].getFullPathName() + (extras[i].isDirectory() ? "" : "  (no existe)"));
+    };
+
+    const auto folderArg = [&args] (const juce::String& flag)
+    {
+        const auto index = args.indexOf (flag);
+        const auto value = index >= 0 ? args[index + 1].unquoted() : juce::String();
+        return value.isEmpty() ? juce::File() : juce::File::getCurrentWorkingDirectory().getChildFile (value);
+    };
+
+    int exitCode = 0;
+
+    if (args.contains ("--add-plugin-folder"))
+    {
+        const auto folder = folderArg ("--add-plugin-folder");
+
+        if (folder == juce::File())
+        {
+            print ("Falta la carpeta: --add-plugin-folder <carpeta>");
+            return 1;
+        }
+
+        const auto result = manager.addExtraFolder (folder);
+        print (PluginManager::describe (result, folder));
+
+        if (result == PluginManager::AddFolderResult::added || result == PluginManager::AddFolderResult::alreadyPresent)
+        {
+            const auto before = manager.getKnownPluginList().getNumTypes();
+            const auto report = manager.scanBlocking (false, [] (const juce::String& s) { print (s); });
+            print ("Escaneo: " + juce::String (report.childProcesses) + " archivos nuevos probados, "
+                   + juce::String (manager.getKnownPluginList().getNumTypes() - before) + " plugins nuevos, "
+                   + juce::String (report.newlyBlacklisted.size()) + " desactivados");
+
+            for (auto& f : report.newlyBlacklisted)
+                print ("  desactivado: " + f);
+        }
+        else
+        {
+            exitCode = 1;
+        }
+    }
+    else if (args.contains ("--remove-plugin-folder"))
+    {
+        const auto folder = folderArg ("--remove-plugin-folder");
+        const auto removed = folder == juce::File() ? -1 : manager.removeExtraFolder (folder);
+
+        if (removed < 0)
+        {
+            print ("No es una carpeta extra: " + folder.getFullPathName());
+            exitCode = 1;
+        }
+        else
+        {
+            print ("Carpeta quitada: " + folder.getFullPathName() + " (" + juce::String (removed)
+                   + " entradas quitadas de plugins.xml)");
+        }
+    }
+
+    printFolders();
+    print ("Plugins en la lista: " + juce::String (manager.getKnownPluginList().getNumTypes())
+           + ", desactivados: " + juce::String (manager.getKnownPluginList().getBlacklistedFiles().size()));
+
+    if (! manager.save())
+    {
+        print ("plugins.xml NO se pudo escribir");
+        exitCode = 1;
+    }
+
+    settings.flush();
+    return exitCode;
 }
 
 int runAudioSelfTest (const juce::StringArray& args, AppSettings& settings)

@@ -280,6 +280,39 @@ async function main() {
     const afterPanic = lv.instances.find((i) => i.instanceId === dexed.id).peakDb;
     check(afterPanic < -90 && lv.masterPeakDb < -90, 'después de panic: silencio (notas sostenidas cortadas)', `Dexed ${afterPanic.toFixed(1)} dBFS, mezcla ${lv.masterPeakDb.toFixed(1)} dBFS`);
 
+    // CC7 / CC10: VstPlayer's gain node applies them (volume = value / 127, pan like Web Audio's
+    // StereoPannerNode); they do not reach the plugin.
+    async function ccNote(cc) {
+        await http({ cmd: 'midi', instanceId: dexed.id, bytes: cc });
+        await sleep(150); // past the 20 ms smoothing ramp
+        await http({ cmd: 'levels' });
+        await http({ cmd: 'midi', instanceId: dexed.id, bytes: [144, 60, 100] });
+        await sleep(500);
+        const l = (await http({ cmd: 'levels' })).json.instances.find((i) => i.instanceId === dexed.id);
+        await http({ cmd: 'midi', instanceId: dexed.id, bytes: [128, 60, 0] });
+        await http({ cmd: 'panic' });
+        await sleep(500);
+        return l;
+    }
+    r = await http({ cmd: 'status' });
+    let mix = r.json.instances.find((i) => i.id === dexed.id).midiMix;
+    check(mix && mix.volume === null && mix.pan === null, 'status: midiMix sin CC recibidos (null, null)');
+    let l = await ccNote([0xb0, 7, 0]);
+    check(l.peakDb < -90, 'CC7 = 0 silencia la instancia', `${l.peakDb.toFixed(1)} dBFS`);
+    l = await ccNote([0xb0, 7, 127, 0xb0, 10, 0]);
+    check(l.peakDbL > -80 && l.peakDbR < -90, 'CC7 = 127 + CC10 = 0: todo a la izquierda', `L ${l.peakDbL.toFixed(1)}, R ${l.peakDbR.toFixed(1)} dBFS`);
+    l = await ccNote([0xb0, 10, 127]);
+    check(l.peakDbR > -80 && l.peakDbL < -90, 'CC10 = 127: todo a la derecha', `L ${l.peakDbL.toFixed(1)}, R ${l.peakDbR.toFixed(1)} dBFS`);
+    const full = await ccNote([0xb0, 10, 64]);
+    const half = await ccNote([0xb0, 7, 64]);
+    const expected = 20 * Math.log10(64 / 127);
+    check(Math.abs(half.peakDb - full.peakDb - expected) < 1.5, 'CC7 = 64: ganancia lineal 64/127 (centro con CC10 = 64)',
+        `${(half.peakDb - full.peakDb).toFixed(2)} dB (esperado ${expected.toFixed(2)}); L/R ${full.peakDbL.toFixed(1)}/${full.peakDbR.toFixed(1)}`);
+    await http({ cmd: 'midi', instanceId: dexed.id, bytes: [0xb0, 7, 127] });
+    await sleep(100);
+    mix = (await http({ cmd: 'status' })).json.instances.find((i) => i.id === dexed.id).midiMix;
+    check(mix.volume === 127 && mix.pan === 64, 'status: midiMix con los últimos CC7 / CC10', JSON.stringify(mix));
+
     for (const [bytes, what] of [[[240, 1, 247], 'sysex'], [[60, 100], 'sin status'], [[144, 60], 'incompleto'], [[144, 200, 1], 'dato > 127']]) {
         r = await http({ cmd: 'midi', instanceId: dexed.id, bytes });
         check(r.status === 400 && r.json.code === 'badMidi', `midi inválido (${what}): 400`);
