@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/InstanceGraph.h"
+#include "engine/Recorder.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -39,8 +40,10 @@ class ApiServer;
 // - Events: parameter changes are flagged from any thread (AudioProcessorListener) and sent by a
 //   20 Hz timer on the message thread, coalesced per instance (paramChanged). MIDI activity is
 //   sampled by the same timer. instanceAdded / instanceRemoved / instanceLoaded / projectLoaded
-//   come from the graph and project notifications.
+//   come from the graph and project notifications. recordingStarted / recordingStopped come from
+//   the Recorder (whoever started or stopped it: API, UI, device change).
 class ApiController final : private InstanceGraph::Listener,
+                            private Recorder::Listener,
                             private juce::AudioProcessorListener,
                             private juce::ChangeListener,
                             private juce::Timer
@@ -79,6 +82,9 @@ public:
     std::function<void()> panicAction;
     // Gain / mute changed through the API: refresh the rows.
     std::function<void()> onInstanceValuesChanged;
+    // startRecording: the options of settings.xml for the current project (format, WAV, folder).
+    // Unset = MP3 256 kbps into Documents\VstPlayer\Grabaciones.
+    std::function<Recorder::Options()> getRecordingOptions;
 
 private:
     struct Live;
@@ -117,6 +123,8 @@ private:
     void cmdSetProgram (const juce::var&, const Responder&);
     void cmdLevels (const juce::var&, const Responder&);
     void cmdAudioStats (const juce::var&, const Responder&);
+    void cmdStartRecording (const juce::var&, const Responder&);
+    void cmdStopRecording (const juce::var&, const Responder&);
 
     static void refreshParameterCache (juce::AudioPluginInstance& plugin);
     void refreshThen (const InstanceId& id, std::function<void()> then);
@@ -124,6 +132,8 @@ private:
     juce::var describeInstance (const Instance& instance) const;
     juce::var describeProject() const;
     juce::var describeParameter (juce::AudioProcessorParameter& p, int index) const;
+    static juce::var describeRecording (const Recorder::Info& info);
+    static juce::DynamicObject::Ptr describeRecordingResult (const Recorder::Result& result);
 
     //==============================================================================
     // Instances whose plugin is in the graph (for the network-thread commands and the
@@ -155,6 +165,10 @@ private:
     // AudioProcessorListener (any thread)
     void audioProcessorParameterChanged (juce::AudioProcessor*, int parameterIndex, float) override;
     void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override {}
+
+    // Recorder::Listener
+    void recordingStarted (const Recorder::Info&) override;
+    void recordingStopped (const Recorder::Result&) override;
 
     // ProjectController (loads finished).
     void changeListenerCallback (juce::ChangeBroadcaster*) override;

@@ -17,6 +17,7 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(juce)
 include(httplib)
+include(lame)
 include(msvc-flags)
 
 # Icon: JUCE builds the .ico embedded in the exe from these PNGs (16 and 32 px from ICON_SMALL,
@@ -39,11 +40,14 @@ target_sources(VstPlayer PRIVATE
     src/app/OfflineRender.cpp
     src/app/ProjectSelfTest.cpp
     src/app/ProcessTools.cpp
+    src/app/RecordingSettings.cpp
     src/app/Translations.cpp
     src/app/UiSelfTest.cpp
     src/api/ApiController.cpp
     src/api/ApiServer.cpp
     src/engine/AudioEngine.cpp
+    src/engine/Mp3Writer.cpp
+    src/engine/Recorder.cpp
     src/engine/InstanceGraph.cpp
     src/engine/MidiRouter.cpp
     src/engine/PluginManager.cpp
@@ -57,6 +61,7 @@ target_sources(VstPlayer PRIVATE
     src/ui/MidiPortsWindow.cpp
     src/ui/PluginEditorWindow.cpp
     src/ui/PluginListWindow.cpp
+    src/ui/RecordingSettingsWindow.cpp
     src/ui/Theme.cpp)
 
 target_include_directories(VstPlayer PRIVATE src)
@@ -104,6 +109,7 @@ target_link_libraries(VstPlayer
         juce::juce_audio_processors
         juce::juce_audio_devices
         httplib::httplib
+        mp3lame
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags)

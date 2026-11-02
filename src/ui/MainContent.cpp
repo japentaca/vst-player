@@ -44,6 +44,10 @@ MainContent::MainContent (AudioEngine& e, PluginManager& p, InstanceGraph& i, Mi
     setUpButton (midiPortsButton, "Puertos MIDI…", "Estado de los puertos MIDI y últimos mensajes", &onShowMidiPorts);
     setUpButton (pluginsButton, "Plugins…", "Lista de plugins VST3 y escaneo", &onShowPlugins);
 
+    recordButton.onClick = [this] { if (onToggleRecording) onToggleRecording(); };
+    addAndMakeVisible (recordButton);
+    refreshRecording();
+
     panicButton.setButtonText (juce::String::fromUTF8 ("PÁNICO"));
     panicButton.setTooltip (juce::String::fromUTF8 ("All notes off + all sound off en todas las instancias (Esc)"));
     panicButton.setColour (juce::TextButton::buttonColourId, theme::panic);
@@ -79,7 +83,7 @@ MainContent::MainContent (AudioEngine& e, PluginManager& p, InstanceGraph& i, Mi
     hintLabel.setFont (juce::FontOptions (12.5f));
     hintLabel.setColour (juce::Label::textColourId, theme::textDim);
     hintLabel.setJustificationType (juce::Justification::centredRight);
-    hintLabel.setText (juce::String::fromUTF8 ("Esc pánico · Ctrl+S guardar · Ctrl+O abrir · Ctrl+N nuevo"), juce::dontSendNotification);
+    hintLabel.setText (juce::String::fromUTF8 ("Esc pánico · Ctrl+R grabar · Ctrl+S guardar · Ctrl+O abrir"), juce::dontSendNotification);
     addAndMakeVisible (hintLabel);
 
     apiLabel.setFont (juce::FontOptions (12.5f));
@@ -131,6 +135,8 @@ void MainContent::resized()
     // Line 1: project + file actions + panic.
     auto line1 = top.removeFromTop (kTopLine1Height).reduced (0, 4);
     panicButton.setBounds (line1.removeFromRight (120));
+    line1.removeFromRight (8);
+    recordButton.setBounds (line1.removeFromRight (100));
     line1.removeFromRight (14);
     saveAsButton.setBounds (line1.removeFromRight (122));
     line1.removeFromRight (4);
@@ -285,10 +291,49 @@ void MainContent::refreshProgress()
     progressBar.setVisible (busy);
 }
 
+void MainContent::refreshRecording()
+{
+    const auto info = engine.getRecorder().getInfo();
+    juce::String text, tooltip;
+
+    if (info.active)
+    {
+        const auto total = (int) info.seconds;
+        const auto h = total / 3600, m = (total / 60) % 60, sec = total % 60;
+        text = juce::String::fromUTF8 ("■ ") + (h > 0 ? juce::String (h) + ":" + juce::String (m).paddedLeft ('0', 2) : juce::String (m))
+               + ":" + juce::String (sec).paddedLeft ('0', 2);
+        tooltip = juce::String::fromUTF8 ("Grabando (") + info.format.getLabel() + juce::String::fromUTF8 (") — clic o Ctrl+R para detener")
+                  + juce::newLine + (info.mp3File != juce::File() ? info.mp3File : info.wavFile).getFullPathName();
+
+        if (info.wavFile != juce::File() && info.mp3File != juce::File())
+            tooltip << juce::newLine << info.wavFile.getFullPathName();
+
+        if (info.peak > 1.0f)
+            tooltip << juce::newLine << juce::String::fromUTF8 ("¡La mezcla pasó de 0 dBFS: el MP3 sale saturado!");
+    }
+    else
+    {
+        text = juce::String::fromUTF8 ("● Grabar");
+        tooltip = juce::String::fromUTF8 ("Grabar lo que suena a un archivo (Ctrl+R). Formato y carpeta: Audio > Opciones de grabación…");
+    }
+
+    if (recordButton.getButtonText() != text)
+        recordButton.setButtonText (text);
+
+    recordButton.setTooltip (tooltip);
+    const auto clipped = info.active && info.peak > 1.0f;
+    recordButton.setColour (juce::TextButton::buttonColourId, info.active ? (clipped ? theme::warning.darker (0.3f) : theme::record)
+                                                                          : juce::Colour (0xff353a43));
+    recordButton.setColour (juce::TextButton::textColourOffId, info.active ? juce::Colours::white : theme::record.brighter (0.2f));
+}
+
 void MainContent::timerCallback()
 {
     if (auto* mixer = engine.getMixer())
         masterMeter.pushPeaks (mixer->getAndResetMeterPeak (0), mixer->getAndResetMeterPeak (1));
+
+    if (tickCount % 6 == 0)
+        refreshRecording();
 
     if (++tickCount % kCpuEveryTicks != 0)
         return;

@@ -1491,3 +1491,69 @@ límite 250): timing de Debug, no relacionado.
   y leer `"channels": []` como "ningún canal".
 - Semántica "cualquier puerto" sin implementar (ver roadmap).
 - El límite de 250 ms del hueco durante el escaneo en `run-ui-test.ps1` queda justo en Debug.
+
+---
+
+## Después de v0.1.0 — Grabar a MP3 / WAV  (2026-11-02)
+
+**Qué se hizo:**
+- **Botón ● Grabar** en la barra superior (al lado de PÁNICO), **Ctrl+R** y Audio → Grabar / Detener
+  grabación: graba lo que suena por la salida de audio (la mezcla, después de las ganancias). Mientras
+  graba el botón es rojo con el tiempo (`■ 1:23`); naranja si la mezcla pasó de 0 dBFS. Barra de estado
+  al empezar (archivo) y al terminar (duración, archivos y tamaños, carpeta, avisos de saturación o de
+  audio perdido). Salir mientras se graba pregunta "¿Detener la grabación y salir?".
+- **Archivo**: `<proyecto> AAAA-MM-DD HH-MM-SS.mp3` (` (2)` si existe) en la carpeta del
+  `.vstproj.json`; proyecto sin guardar → `Documentos\VstPlayer\Grabaciones`.
+- **MP3 con LAME 3.100** compilado dentro del exe (`cmake/lame.cmake`: tarball de SourceForge con
+  SHA-256 fijo, librería estática `mp3lame` con la lista de fuentes de su `Makefile.MSVC` y `configMS.h`
+  como `config.h`, `/W0`). `Mp3Writer` (`AudioFormatWriter`): `-q 0`, joint stereo, CBR o VBR nuevo
+  (`-V n`), frecuencia del dispositivo (> 48 kHz → LAME convierte a 48 / 44,1 kHz), ID3v2 con título
+  (UTF-16), año y comentario, y el frame "Info" / "Xing" de LAME reescrito al final (duración exacta,
+  tabla de búsqueda, retardo del encoder). Los mensajes de LAME a stderr están silenciados.
+- **Se codifica mientras se graba**: `Recorder` (en `AudioEngine`) recibe cada bloque del callback del
+  dispositivo (`TimedCallback`, después del grafo) y lo copia a un `ThreadedWriter` (FIFO de 10 s; el
+  hilo de audio usa try-lock y nunca espera); un `TimeSliceThread` pasa el audio a un `SplitWriter` que
+  alimenta el MP3 y/o el WAV. Detener sólo vacía lo que queda en el FIFO (ms): no hay conversión
+  posterior. El WAV (32 bits float) reescribe su encabezado cada 5 s (legible aunque la app se cuelgue).
+- **Opciones** (Audio → Opciones de grabación…, `RecordingSettingsComponent`, se aplican al cambiar):
+  formato `cbr256` (por defecto) / `cbr320` / `cbr192` / `vbr0` / `vbr2` / `wav` (sólo WAV), "Guardar
+  también el WAV", carpeta del proyecto o una fija; `settings.xml`: `recordingFormat`,
+  `recordingKeepWav`, `recordingFolder` (`RecordingSettings`). Audio → Abrir carpeta de grabaciones.
+- **Dispositivo que se detiene** (otro dispositivo, sample rate o buffer, dispositivo perdido, abrir un
+  proyecto con otro bloque `audio`) o **error de escritura** (disco lleno): la grabación se corta sola
+  (`AsyncUpdater` → hilo de mensajes) con los archivos válidos hasta ese momento y un aviso. Un archivo
+  nunca mezcla dos formatos.
+- **API**: `startRecording` (`format`, `keepWav`, `folder`, `name`; lo que falta sale de settings.xml),
+  `stopRecording`, `status.recording`, eventos `recordingStarted` / `recordingStopped` (`reason`: `api`,
+  `user`, `device`, `error`). Errores 409 `alreadyRecording` / `notRecording`, 400 formato desconocido,
+  500 `failed`. `examples/carrilion-client.js`: `startRecording(opts)` / `stopRecording()`.
+- Licencia: LAME es LGPL 2.0+ (compatible con AGPLv3); nota en el README.
+
+**Archivos:** `cmake/lame.cmake` (nuevo), `CMakeLists.txt`, `src/engine/{Mp3Writer,Recorder}.{h,cpp}`
+(nuevos), `src/engine/AudioEngine.{h,cpp}`, `src/app/RecordingSettings.{h,cpp}` (nuevos),
+`src/app/MainWindow.{h,cpp}`, `src/app/UiSelfTest.cpp`, `src/ui/RecordingSettingsWindow.{h,cpp}`
+(nuevos), `src/ui/{MainContent.{h,cpp},Theme.h}`, `src/api/ApiController.{h,cpp}`, `src/Main.cpp`,
+`examples/carrilion-client.js`, `tools/api-test.mjs`, `README.md`, `CLAUDE.md`, `docs/{api,roadmap}.md`.
+
+**Verificación:** builds Release y Debug sin warnings (LAME compila con `/W0`, el resto con `/W4`).
+Suite completa en Release y en Debug (Debug con `-AllowedLeaks VST3HostContextHeadless,AsyncUpdater`):
+`ctest`, `--instance-selftest`, `--midi-selftest`, `run-project-test.ps1`, `run-ui-test.ps1`,
+`run-api-test.ps1` y `run-render-test.ps1`: OK, 0 aserciones, sin fugas nuevas.
+- `run-api-test.ps1`: 409 / 400 de los errores; MP3 256 + WAV con una nota de Dexed: eventos,
+  `status.recording`, el MP3 se recorre frame por frame (ID3v2 con el título "Prueba grabación", frame
+  Info de LAME, todos los frames MPEG-1 Layer III a 256 kbps y 48 kHz hasta el último byte), WAV float
+  estéreo con la nota, duraciones (WAV = la informada; MP3 = WAV ± retardo del encoder); VBR V0 sin WAV
+  (frame Xing, bitrates 64…256, un solo archivo); "sólo WAV".
+- `run-ui-test.ps1`: Ctrl+R graba en la carpeta del proyecto (`ui-prueba AAAA-…mp3`), botón `■ 0:01`,
+  layout grabando, captura `06-grabando.png`, Ctrl+R detiene (archivo, estado "Grabado 0:01…"); ventana
+  de opciones (layout, captura `06-opciones-grabacion.png`); cerrar y reabrir el dispositivo mientras
+  graba corta la grabación con el aviso y deja el archivo. El test usa `recordingSettingsOverride`: no
+  lee la carpeta del usuario.
+- A mano: tres grabaciones (256 + WAV, 320, VBR V0) por la API; Windows las abre (WPF MediaPlayer:
+  3,07 / 3,07 / 3,05 s). El MP3 256 decodificado con Media Foundation (`MediaTranscoder` → WAV 16 bits)
+  y comparado con el WAV float grabado: correlación 1,00000 en los dos canales, SNR 59,8 dB, mismo pico
+  (−21,3 dBFS), retardo 1729 muestras (encoder + decoder, sin gapless).
+
+**Pendiente:**
+- Oír una grabación larga y grabar durante una sesión real con carrilion (verificación manual).
+- Stems por instancia, modo "armado" (empieza con la primera nota), MP3 en `--render` (ver roadmap).

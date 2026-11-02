@@ -491,6 +491,152 @@ async function main() {
     check(r.json.api.clients === 0, 'clientes vuelve a 0 al cerrar los WebSockets');
 
     //--------------------------------------------------------------------------
+    // Recording (startRecording / stopRecording): MP3 encoded while recording (LAME), optional WAV.
+    // The files are checked structurally: ID3v2 tag, LAME "Info" / "Xing" frame, every MPEG-1
+    // Layer III frame header up to the end, bitrate, and the MP3 duration against the WAV's.
+    {
+        const fs = await import('node:fs');
+        const path = await import('node:path');
+        const recDir = path.join(tmpDir, 'grabaciones');
+        const wsr = await new Client(`ws://127.0.0.1:${port}/ws${q}`).open();
+
+        // Parses an MP3: ID3v2 size, frames (sync, MPEG-1 Layer III), info tag, duration.
+        function parseMp3(file) {
+            const b = fs.readFileSync(file);
+            const out = { ok: false, bytes: b.length, id3: false, frames: 0, bitrates: new Set(), sampleRate: 0, tag: '', title: '' };
+            let pos = 0;
+            if (b.toString('latin1', 0, 3) === 'ID3') {
+                out.id3 = true;
+                const size = (b[6] << 21) | (b[7] << 14) | (b[8] << 7) | b[9];
+                const tagText = b.subarray(10, 10 + size);
+                const tit = tagText.indexOf('TIT2');
+                if (tit >= 0) {
+                    const len = tagText.readUInt32BE(tit + 4);
+                    const body = tagText.subarray(tit + 10, tit + 10 + len); // encoding byte + BOM + UTF-16LE
+                    if (body[0] === 1) out.title = body.subarray(3).toString('utf16le').replace(/\u0000+$/, '');
+                }
+                pos = 10 + size;
+            }
+            const rates = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
+            const srs = [44100, 48000, 32000, 0];
+            let first = true;
+            while (pos + 4 <= b.length) {
+                const h = b.readUInt32BE(pos);
+                if ((h >>> 21) !== 0x7ff || ((h >>> 19) & 3) !== 3 || ((h >>> 17) & 3) !== 1) return out; // not MPEG-1 Layer III
+                const br = rates[(h >>> 12) & 15], sr = srs[(h >>> 10) & 3], pad = (h >>> 9) & 1;
+                if (!br || !sr) return out;
+                const len = Math.floor(144000 * br / sr) + pad;
+                if (first) {
+                    const frame = b.toString('latin1', pos, pos + len);
+                    out.tag = frame.includes('Xing') ? 'Xing' : frame.includes('Info') ? 'Info' : '';
+                    out.lame = frame.includes('LAME');
+                    first = false;
+                } else {
+                    out.frames++;
+                    out.bitrates.add(br);
+                }
+                out.sampleRate = sr;
+                pos += len;
+            }
+            out.ok = pos === b.length;
+            out.seconds = out.frames * 1152 / out.sampleRate;
+            return out;
+        }
+
+        // 32-bit float stereo WAV: format, rate, duration, peak.
+        function parseWav(file) {
+            const b = fs.readFileSync(file);
+            const out = { ok: false };
+            if (b.toString('latin1', 0, 4) !== 'RIFF' || b.toString('latin1', 8, 12) !== 'WAVE') return out;
+            let pos = 12;
+            while (pos + 8 <= b.length) {
+                const id = b.toString('latin1', pos, pos + 4), size = b.readUInt32LE(pos + 4);
+                if (id === 'fmt ') {
+                    out.format = b.readUInt16LE(pos + 8);
+                    if (out.format === 0xfffe) out.format = b.readUInt16LE(pos + 8 + 24); // extensible: sub-format
+                    out.channels = b.readUInt16LE(pos + 10);
+                    out.sampleRate = b.readUInt32LE(pos + 12);
+                    out.bits = b.readUInt16LE(pos + 22);
+                } else if (id === 'data') {
+                    const n = Math.min(size, b.length - pos - 8) / 4;
+                    let peak = 0;
+                    for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(b.readFloatLE(pos + 8 + 4 * i)));
+                    out.peak = peak;
+                    out.seconds = n / (out.channels || 2) / out.sampleRate;
+                    out.ok = true;
+                    break;
+                }
+                pos += 8 + size + (size & 1);
+            }
+            return out;
+        }
+
+        r = await http({ cmd: 'stopRecording' });
+        check(r.status === 409 && r.json.code === 'notRecording', 'stopRecording sin grabar: 409 notRecording');
+        r = await http({ cmd: 'startRecording', format: 'ogg' });
+        check(r.status === 400 && r.json.code === 'badRequest', 'startRecording con un formato desconocido: 400', r.json.error);
+
+        since = wsr.events.length;
+        r = await http({ cmd: 'startRecording', folder: recDir, format: 'cbr256', keepWav: true, name: 'Prueba grabación' });
+        const rec = r.json.recording || {};
+        check(r.json.ok && rec.active && rec.format === 'cbr256' && /Prueba grabación \d{4}-\d\d-\d\d \d\d-\d\d-\d\d\.mp3$/.test(rec.mp3File || '')
+            && /\.wav$/.test(rec.wavFile || ''), 'startRecording: MP3 256 + WAV, nombre "<nombre> AAAA-MM-DD HH-MM-SS"', rec.mp3File);
+        const started = await wsr.waitEvent((e) => e.event === 'recordingStarted', 1000, since);
+        check(!!started && started.recording.mp3File === rec.mp3File, 'evento recordingStarted');
+        r = await http({ cmd: 'startRecording', folder: recDir });
+        check(r.status === 409 && r.json.code === 'alreadyRecording', 'startRecording mientras graba: 409 alreadyRecording');
+
+        await http({ cmd: 'midi', instanceId: dexed.id, bytes: [0x90, 60, 100] });
+        await sleep(1200);
+        await http({ cmd: 'midi', instanceId: dexed.id, bytes: [0x80, 60, 0] });
+        await sleep(600);
+        const st = (await http({ cmd: 'status' })).json;
+        check(st.recording && st.recording.active && st.recording.seconds > 1.5, 'status.recording mientras graba', `${st.recording && st.recording.seconds} s`);
+
+        since = wsr.events.length;
+        r = await http({ cmd: 'stopRecording' });
+        const done = r.json.recording || {};
+        check(r.json.ok && !done.active && r.json.reason === 'api' && r.json.mp3Bytes > 10000 && r.json.wavBytes > 100000
+            && done.droppedSeconds === 0, 'stopRecording', `${done.seconds} s, MP3 ${r.json.mp3Bytes} B, WAV ${r.json.wavBytes} B, pico ${done.peakDb} dBFS`);
+        const stopped = await wsr.waitEvent((e) => e.event === 'recordingStopped', 1000, since);
+        check(!!stopped && stopped.reason === 'api' && stopped.mp3Bytes === r.json.mp3Bytes, 'evento recordingStopped');
+
+        const mp3 = parseMp3(done.mp3File);
+        const wav = parseWav(done.wavFile);
+        check(mp3.ok && mp3.id3 && mp3.title === 'Prueba grabación' && mp3.tag === 'Info' && mp3.lame,
+            'MP3: ID3v2 con el título, frame Info de LAME, frames MPEG-1 Layer III válidos hasta el final', `${mp3.frames} frames, título "${mp3.title}"`);
+        check(mp3.bitrates.size === 1 && mp3.bitrates.has(256) && mp3.sampleRate === Math.round(st.audio.sampleRate),
+            'MP3: 256 kbps CBR a la frecuencia del dispositivo', `${[...mp3.bitrates].join(',')} kbps, ${mp3.sampleRate} Hz`);
+        check(wav.ok && wav.format === 3 && wav.channels === 2 && wav.bits === 32 && wav.sampleRate === mp3.sampleRate,
+            'WAV: 32 bits float estéreo', `${wav.sampleRate} Hz`);
+        check(wav.peak > 0.001, 'WAV: la nota de Dexed quedó grabada', `pico ${(20 * Math.log10(wav.peak || 1e-9)).toFixed(1)} dBFS`);
+        check(Math.abs(wav.seconds - done.seconds) < 0.05 && Math.abs(mp3.seconds - wav.seconds) < 0.1,
+            'duración: WAV = la informada, MP3 = WAV (± retardo del encoder)', `WAV ${wav.seconds.toFixed(3)} s, MP3 ${mp3.seconds.toFixed(3)} s`);
+
+        // VBR V0 without the WAV, then WAV only.
+        r = await http({ cmd: 'startRecording', folder: recDir, format: 'vbr0', keepWav: false, name: 'vbr' });
+        const vbr = r.json.recording || {};
+        await http({ cmd: 'midi', instanceId: dexed.id, bytes: [0x90, 64, 100] });
+        await sleep(800);
+        await http({ cmd: 'midi', instanceId: dexed.id, bytes: [0x80, 64, 0] });
+        r = await http({ cmd: 'stopRecording' });
+        const vbrMp3 = r.json.ok ? parseMp3(vbr.mp3File) : {};
+        check(r.json.ok && vbr.wavFile === null && r.json.wavBytes === 0 && vbrMp3.ok && vbrMp3.tag === 'Xing' && vbrMp3.bitrates.size > 1,
+            'MP3 VBR V0 sin WAV: frame Xing, bitrate variable, sin .wav', `${[...(vbrMp3.bitrates || [])].sort((a, b) => a - b).join(',')} kbps`);
+        check(fs.readdirSync(recDir).filter((f) => f.startsWith('vbr ')).length === 1, 'VBR: un solo archivo en la carpeta');
+
+        r = await http({ cmd: 'startRecording', folder: recDir, format: 'wav', name: 'solo wav' });
+        const wavOnly = r.json.recording || {};
+        await sleep(500);
+        r = await http({ cmd: 'stopRecording' });
+        check(r.json.ok && wavOnly.mp3File === null && /solo wav .*\.wav$/.test(wavOnly.wavFile || '') && parseWav(wavOnly.wavFile).ok
+            && r.json.mp3Bytes === 0, 'formato wav: sólo el WAV');
+        wsr.close();
+        await http({ cmd: 'panic' });
+        await sleep(300);
+    }
+
+    //--------------------------------------------------------------------------
     // examples/carrilion-client.js (the module a web page would use)
     const fs = await import('node:fs');
     const fileText = fs.readFileSync(new URL('../examples/carrilion-client.js', import.meta.url), 'utf8');

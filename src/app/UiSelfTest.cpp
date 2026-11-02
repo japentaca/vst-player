@@ -83,6 +83,7 @@ struct UiTestState
     juce::PluginDescription dexed, surge, sforzando;
     InstanceId dexedId, surgeId, sforzandoId, copyId;
     juce::File dir;
+    juce::File recordedFile;
     juce::File projectFile;
     GapMonitor gaps;
     double addedAtMs = 0.0;
@@ -872,6 +873,110 @@ void InstanceSelfTest::buildUiSteps()
             if (i->name == "Dexed")
                 s.dexedId = i->id;
 
+        return ok;
+    });
+
+    //==============================================================================
+    // Recording: Ctrl+R starts and stops; default folder = the project's (s.dir), name
+    // "<proyecto> AAAA-MM-DD HH-MM-SS.mp3". The user's recording settings are not used.
+    action ("Ctrl+R = grabar (MP3 256 en la carpeta del proyecto)", [this, &content]
+    {
+        window.recordingSettingsOverride = [] { return RecordingSettings {}; };
+        content.setStatus ("-");
+        auto ok = check (content.getRecordButton().getButtonText().contains ("Grabar"), "boton: \"" + content.getRecordButton().getButtonText() + "\"");
+        ok = check (sendKeyToWindow (window, juce::KeyPress ('r', juce::ModifierKeys::commandModifier, 0)), "Ctrl+R procesado") && ok;
+        return ok;
+    });
+
+    action ("Grabando: archivo, boton y estado", [this, &panel, &content, &s]
+    {
+        const auto info = engine.getRecorder().getInfo();
+        auto ok = check (info.active, "grabando");
+        ok = check (info.mp3File.getParentDirectory() == s.dir && info.mp3File.getFileName().startsWith ("ui-prueba 20")
+                        && info.wavFile == juce::File(),
+                    "archivo: " + info.mp3File.getFullPathName()) && ok;
+        ok = check (content.getStatusText().startsWith ("Grabando"), "estado: " + content.getStatusText()) && ok;
+        panel.selectInstance (s.dexedId);
+        panel.getKeyboardState().noteOn (InstancePanel::kKeyboardChannel, 64, 0.9f);
+        return ok;
+    });
+
+    waitMs (1300);
+
+    action ("Boton con el tiempo de grabacion", [this, &panel, &content]
+    {
+        panel.getKeyboardState().noteOff (InstancePanel::kKeyboardChannel, 64, 0.0f);
+        content.refreshRecording();
+        return check (content.getRecordButton().getButtonText().startsWith (juce::String::fromUTF8 ("■ 0:0")), "boton: \"" + content.getRecordButton().getButtonText() + "\"");
+    });
+
+    layoutCheck ("1024x600 grabando", true);
+    shot ("06-grabando");
+
+    action ("Ctrl+R otra vez = detener", [this, &content, &s]
+    {
+        s.recordedFile = engine.getRecorder().getInfo().mp3File;
+        auto ok = check (sendKeyToWindow (window, juce::KeyPress ('r', juce::ModifierKeys::commandModifier, 0)), "Ctrl+R procesado");
+        ok = check (! engine.getRecorder().isRecording(), "grabacion detenida") && ok;
+        ok = check (s.recordedFile.existsAsFile() && s.recordedFile.getSize() > 20000,
+                    s.recordedFile.getFileName() + ": " + juce::String (s.recordedFile.getSize()) + " bytes") && ok;
+        ok = check (content.getStatusText().startsWith ("Grabado 0:0"), "estado: " + content.getStatusText()) && ok;
+        ok = check (content.getRecordButton().getButtonText().contains ("Grabar"), "boton: \"" + content.getRecordButton().getButtonText() + "\"") && ok;
+        window.recordingSettingsOverride = nullptr;
+        return ok;
+    });
+
+    action ("Audio > Opciones de grabacion: captura y layout", [this, &s]
+    {
+        window.showRecordingSettings();
+        auto* w = window.getRecordingSettingsWindow();
+
+        if (! check (w != nullptr && w->isVisible(), "ventana de opciones de grabacion abierta"))
+            return false;
+
+        auto ok = check (saveScreenshot (*w, s.dir.getChildFile ("06-opciones-grabacion.png")), "captura 06-opciones-grabacion.png");
+        juce::StringArray problems;
+
+        if (auto* c = w->getContentComponent())
+            checkLayout (*c, problems, "RecordingSettings");
+
+        for (auto& p : problems)
+            cli::print ("    " + p);
+
+        ok = check (problems.isEmpty(), "opciones de grabacion: " + juce::String (problems.size()) + " problemas de layout") && ok;
+        delete w;
+        return ok;
+    });
+
+    // A device restart while recording (device or sample rate change, device lost): the recording
+    // is cut (a file never mixes two formats), the files stay valid and the user is told.
+    action ("Grabar y reiniciar el dispositivo de audio", [this, &content, &s]
+    {
+        window.recordingSettingsOverride = [] { return RecordingSettings {}; };
+        content.setStatus ("-");
+        auto ok = check (window.startRecording().wasOk(), "grabacion iniciada");
+        s.recordedFile = engine.getRecorder().getInfo().mp3File;
+        return ok;
+    });
+
+    waitMs (600);
+
+    action ("Cerrar y reabrir el dispositivo", [this]
+    {
+        auto& dm = engine.getDeviceManager();
+        dm.closeAudioDevice();
+        dm.restartLastAudioDevice();
+        return check (dm.getCurrentAudioDevice() != nullptr, "dispositivo reabierto");
+    });
+
+    waitFor ("esperar el corte de la grabacion", [this] { return ! engine.getRecorder().isRecording(); }, 5.0);
+
+    action ("Grabacion cortada por el dispositivo, archivo valido, aviso", [this, &content, &s]
+    {
+        window.recordingSettingsOverride = nullptr;
+        auto ok = check (! engine.getRecorder().isRecording(), "grabacion detenida");
+        ok = check (s.recordedFile.getSize() > 5000, s.recordedFile.getFileName() + ": " + juce::String (s.recordedFile.getSize()) + " bytes") && ok;
+        ok = check (content.getStatusText().startsWith (juce::String::fromUTF8 ("Grabación detenida")), "estado: " + content.getStatusText()) && ok;
         return ok;
     });
 

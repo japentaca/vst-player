@@ -73,11 +73,37 @@ Archivos del usuario: `%APPDATA%\VstPlayer\` (`settings.xml`, `plugins.xml`, `re
    corta todas las notas.
 6. También se abre un proyecto desde la consola: `VstPlayer.exe "C:\ruta\mi.vstproj.json"` (si la app
    ya está abierta, lo abre esa misma ventana).
+7. **● Grabar** (Ctrl+R) graba lo que suena; ver "Grabar" abajo.
 
 En `examples\` hay proyectos de ejemplo: `prueba-etapa5.vstproj.json` (Dexed en el canal 1, Surge XT en
 los canales 2 y 3 remapeados al 1, sforzando en el canal 4, todo desde `loopMIDI Port`) y
 `plugin-faltante.vstproj.json` (muestra cómo se ve un plugin no instalado). Un plugin que no esté
 instalado o escaneado aparece en rojo como "FALTA" y el resto del proyecto funciona igual.
+
+## Grabar
+
+**● Grabar** (barra superior, Ctrl+R o Audio → Grabar) graba **lo que suena por la salida de audio**
+(la mezcla de todas las instancias, después del volumen) hasta que se vuelve a apretar. El botón se
+pone rojo con el tiempo transcurrido.
+
+- **Archivo**: `<proyecto> AAAA-MM-DD HH-MM-SS.mp3`, p. ej. `Piano y pads 2026-11-02 21-35-07.mp3`
+  (si ya existe, ` (2)`). Por defecto en la **carpeta del proyecto** (la del `.vstproj.json`); un
+  proyecto sin guardar graba en `Documentos\VstPlayer\Grabaciones`.
+- **Calidad**: el MP3 se codifica con **LAME** (incluido en el exe) en su modo de máxima calidad
+  (`-q 0`, joint stereo), a la frecuencia del dispositivo (48 kHz normalmente; más de 48 kHz se
+  convierte a 48 / 44,1 kHz, el máximo del MP3). Se codifica mientras se graba: al detener, el archivo
+  ya está listo.
+- **Audio → Opciones de grabación…**: formato (**MP3 256 kbps CBR** por defecto, 320, 192, VBR V0
+  ~245 kbps, VBR V2 ~190 kbps, o *Sólo WAV*), **Guardar también el WAV** (32 bits float, sin pérdida,
+  al lado del MP3) y la carpeta (la del proyecto o una fija). Se guarda en `settings.xml`
+  (`recordingFormat`, `recordingKeepWav`, `recordingFolder`). **Abrir carpeta de grabaciones** en el
+  mismo menú.
+- Si la mezcla pasa de 0 dBFS el botón se pone naranja y el aviso final lo dice (en el MP3 eso queda
+  saturado; el WAV float lo conserva). Bajar la ganancia de las instancias.
+- Si cambia el dispositivo de audio, su sample rate o el buffer mientras se graba, la grabación se
+  corta (los archivos quedan bien hasta ese momento) y se avisa. Salir mientras se graba pregunta
+  primero.
+- Desde la API: `startRecording` / `stopRecording` (ver [`docs/api.md`](docs/api.md)).
 
 ## carrilion → VstPlayer sin dispositivos MIDI (lo más simple)
 
@@ -134,7 +160,7 @@ Servidor en **`127.0.0.1:9471`** (sólo loopback): `POST /api` con un comando JS
 con respuestas y eventos (`paramChanged`, `instanceAdded`, `projectLoaded`, `midiActivity`…). Comandos:
 `status`, `loadProject`, `listProjects`, `saveProject`, `listParams`, `getParam`, `setParam`, `setGain`,
 `setMute`, `panic`, `listPrograms`, `setProgram`, `midi` (a una instancia, o sin `instanceId` por las
-rutas del proyecto). La barra de estado muestra
+rutas del proyecto), `startRecording`, `stopRecording`. La barra de estado muestra
 `API: 127.0.0.1:9471, N clientes`.
 
 Desde la consola del navegador (F12) en cualquier página:
@@ -238,5 +264,6 @@ commitear `bin/win64` en carrilion.
 VstPlayer es software libre bajo la **GNU Affero General Public License v3.0** (ver `LICENSE`).
 Código fuente: <https://github.com/japentaca/vst-player>.
 
-Usa [JUCE](https://juce.com) bajo AGPLv3 y [cpp-httplib](https://github.com/yhirose/cpp-httplib)
-(MIT). VST es una marca de Steinberg Media Technologies GmbH.
+Usa [JUCE](https://juce.com) bajo AGPLv3, [cpp-httplib](https://github.com/yhirose/cpp-httplib)
+(MIT) y [LAME](https://lame.sourceforge.io) 3.100 (encoder MP3, LGPL 2.0 o posterior, compilado sin
+cambios dentro del exe; su código se baja al compilar, ver `cmake/lame.cmake`). VST es una marca de Steinberg Media Technologies GmbH.

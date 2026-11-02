@@ -84,7 +84,8 @@ const juce::StringArray& commandNames()
 {
     static const juce::StringArray names { "status",      "loadProject", "listProjects", "saveProject", "listParams",
                                            "getParam",    "setParam",    "setGain",      "setMute",     "panic",
-                                           "listPrograms", "setProgram", "midi",         "levels",      "audioStats" };
+                                           "listPrograms", "setProgram", "midi",         "levels",      "audioStats",
+                                           "startRecording", "stopRecording" };
     return names;
 }
 } // namespace
@@ -96,12 +97,14 @@ ApiController::ApiController (AudioEngine& e, InstanceGraph& g, MidiRouter& r, P
     weakThis = this; // created here, copied by the network threads
     graph.addListener (this);
     project.addChangeListener (this);
+    engine.getRecorder().addListener (this);
     lastLoadSerial = project.getLoadSerial();
 }
 
 ApiController::~ApiController()
 {
     stop();
+    engine.getRecorder().removeListener (this);
     project.removeChangeListener (this);
     graph.removeListener (this);
 
@@ -305,6 +308,8 @@ std::string ApiController::handleRequest (const std::string& body, int& status)
             { "setProgram", { &ApiController::cmdSetProgram, kDefaultTimeoutMs } },
             { "levels", { &ApiController::cmdLevels, kDefaultTimeoutMs } },
             { "audioStats", { &ApiController::cmdAudioStats, kDefaultTimeoutMs } },
+            { "startRecording", { &ApiController::cmdStartRecording, kDefaultTimeoutMs } },
+            { "stopRecording", { &ApiController::cmdStopRecording, 30000 } },
         };
 
         if (cmd == "setParam")
@@ -702,6 +707,7 @@ void ApiController::cmdStatus (const juce::var&, const Responder& respond)
             routes.add (routeToVar (route));
 
     data->setProperty ("midiRoutes", routes);
+    data->setProperty ("recording", describeRecording (engine.getRecorder().getInfo()));
 
     auto apiInfo = new Obj();
     apiInfo->setProperty ("host", kHost);
@@ -713,6 +719,135 @@ void ApiController::cmdStatus (const juce::var&, const Responder& respond)
     data->setProperty ("api", juce::var (apiInfo));
 
     respond (ok (data));
+}
+
+//==============================================================================
+juce::var ApiController::describeRecording (const Recorder::Info& info)
+{
+    auto o = new Obj();
+    o->setProperty ("active", info.active);
+
+    if (info.mp3File != juce::File() || info.wavFile != juce::File())
+    {
+        o->setProperty ("file", (info.mp3File != juce::File() ? info.mp3File : info.wavFile).getFullPathName());
+        o->setProperty ("mp3File", info.mp3File != juce::File() ? juce::var (info.mp3File.getFullPathName()) : juce::var());
+        o->setProperty ("wavFile", info.wavFile != juce::File() ? juce::var (info.wavFile.getFullPathName()) : juce::var());
+        o->setProperty ("format", info.format.getKey());
+        o->setProperty ("sampleRate", info.sampleRate);
+        o->setProperty ("seconds", std::round (info.seconds * 1000.0) / 1000.0);
+        o->setProperty ("peakDb", info.peak > 0.0f ? std::round (juce::Decibels::gainToDecibels (info.peak) * 10.0f) / 10.0 : -100.0);
+        o->setProperty ("clipped", info.peak > 1.0f);
+        o->setProperty ("droppedSeconds", info.sampleRate > 0.0 ? (double) info.droppedSamples / info.sampleRate : 0.0);
+        o->setProperty ("startedAt", info.startTime.toISO8601 (true));
+    }
+
+    return juce::var (o);
+}
+
+juce::DynamicObject::Ptr ApiController::describeRecordingResult (const Recorder::Result& result)
+{
+    auto data = new Obj();
+    data->setProperty ("recording", describeRecording (result.info));
+    data->setProperty ("reason", Recorder::reasonKey (result.reason));
+    data->setProperty ("mp3Bytes", result.mp3Bytes);
+    data->setProperty ("wavBytes", result.wavBytes);
+
+    if (result.error.isNotEmpty())
+        data->setProperty ("warning", result.error);
+
+    return data;
+}
+
+void ApiController::cmdStartRecording (const juce::var& request, const Responder& respond)
+{
+    auto& recorder = engine.getRecorder();
+
+    if (recorder.isRecording())
+        return respond (fail (409, "alreadyRecording", juce::String::fromUTF8 ("Ya se está grabando: mandar stopRecording primero.")));
+
+    Recorder::Options options;
+
+    if (getRecordingOptions)
+    {
+        options = getRecordingOptions();
+    }
+    else
+    {
+        options.folder = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("VstPlayer").getChildFile ("Grabaciones");
+        options.baseName = project.getProjectName();
+    }
+
+    if (request.hasProperty ("format"))
+    {
+        bool known = false;
+        options.format = RecordingFormat::fromKey (request["format"].toString(), &known);
+
+        if (! known)
+        {
+            juce::StringArray keys;
+            for (auto f : RecordingFormat::all())
+                keys.add (f.getKey());
+
+            return respond (fail (400, "badRequest", "\"format\" debe ser uno de: " + keys.joinIntoString (", ") + "."));
+        }
+    }
+
+    if (request.hasProperty ("keepWav"))
+        options.keepWav = (bool) request["keepWav"];
+
+    if (const auto folder = request["folder"].toString(); folder.isNotEmpty())
+    {
+        const auto base = getDefaultProjectFolder ? getDefaultProjectFolder() : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+        options.folder = resolvePath (folder, base);
+    }
+
+    if (const auto name = request["name"].toString().trim(); name.isNotEmpty())
+    {
+        options.baseName = name;
+        options.title = name;
+    }
+
+    const auto result = engine.startRecording (options);
+
+    if (result.failed())
+    {
+        if (onStatusMessage)
+            onStatusMessage ("API: no se pudo grabar: " + result.getErrorMessage(), true);
+
+        return respond (fail (500, "failed", result.getErrorMessage()));
+    }
+
+    auto data = new Obj();
+    data->setProperty ("recording", describeRecording (recorder.getInfo()));
+    respond (ok (data));
+}
+
+void ApiController::cmdStopRecording (const juce::var&, const Responder& respond)
+{
+    auto& recorder = engine.getRecorder();
+
+    if (! recorder.isRecording())
+        return respond (fail (409, "notRecording", juce::String::fromUTF8 ("No se está grabando.")));
+
+    const auto result = recorder.stop (Recorder::StopReason::api);
+
+    if (! result.ok)
+        return respond (fail (500, "failed", result.error));
+
+    respond (ok (describeRecordingResult (result)));
+}
+
+void ApiController::recordingStarted (const Recorder::Info& info)
+{
+    auto data = new Obj();
+    data->setProperty ("recording", describeRecording (info));
+    sendEvent ("recordingStarted", data);
+}
+
+void ApiController::recordingStopped (const Recorder::Result& result)
+{
+    if (result.reason != Recorder::StopReason::shutdown)
+        sendEvent ("recordingStopped", describeRecordingResult (result));
 }
 
 void ApiController::cmdLoadProject (const juce::var& request, const Responder& respond)

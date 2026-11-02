@@ -13,6 +13,7 @@
 //   vp.on('paramChanged', (e) => console.log(e.instanceId, e.params))
 //   await vp.midi(pads.id, [0x90, 60, 100])            // direct MIDI (no loopMIDI needed)
 //   await vp.panic()
+//   await vp.startRecording({ name: 'Ensayo' })      // ... await vp.stopRecording() -> { recording: { file } }
 //   await vp.loadProject('C:\\Users\\me\\Documents\\pads.vstproj.json')
 //
 // carrilion has its own port now (apps/web/lib/core/vstplayer-port.js, "VstPlayer" in its Midi Out
@@ -136,6 +137,12 @@ export class VstPlayerClient {
     loadProject(path, opts = {}) { return this.request('loadProject', { path, ...opts }) }
     listProjects(dir, opts = {}) { return this.request('listProjects', { ...(dir ? { dir } : {}), ...opts }) }
     saveProject(path) { return this.request('saveProject', path ? { path } : {}) }
+
+    // Recording of what VstPlayer plays. opts (all optional; default = settings.xml):
+    // { format: 'cbr256' | 'cbr320' | 'cbr192' | 'vbr0' | 'vbr2' | 'wav', keepWav, folder, name }.
+    // Events: recordingStarted, recordingStopped ({ recording, reason, mp3Bytes, wavBytes }).
+    startRecording(opts = {}) { return this.request('startRecording', opts) }
+    stopRecording() { return this.request('stopRecording') }
 
     // bytes: one or more channel messages, e.g. [0x90, 60, 100] or [0x80, 60, 0, 0x90, 64, 90].
     midi(instanceId, bytes) { return this.request('midi', { instanceId, bytes }) }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "engine/Recorder.h"
+
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include <atomic>
@@ -75,6 +77,11 @@ public:
     // Buffer underruns / overruns reported by the device (-1 if the driver does not count them).
     int getXRunCount() const { return deviceManager.getXRunCount(); }
 
+    // Recording of the device output (what is heard): see Recorder.
+    Recorder& getRecorder() noexcept { return recorder; }
+    // Starts a recording at the device's sample rate (error if no device is open).
+    juce::Result startRecording (const Recorder::Options& options) { return recorder.start (options, getSampleRate()); }
+
     // Writes the current device setup into settings (no-op when persistState is false).
     void saveDeviceState();
 
@@ -97,21 +104,27 @@ private:
     class TimedCallback final : public juce::AudioIODeviceCallback
     {
     public:
-        explicit TimedCallback (juce::AudioIODeviceCallback& t) : target (t) {}
+        TimedCallback (juce::AudioIODeviceCallback& t, Recorder& r) : target (t), recorder (r) {}
 
         void audioDeviceIOCallbackWithContext (const float* const* in, int numIn, float* const* out, int numOut, int numSamples,
                                                const juce::AudioIODeviceCallbackContext& context) override;
         void audioDeviceAboutToStart (juce::AudioIODevice* device) override;
-        void audioDeviceStopped() override { target.audioDeviceStopped(); }
+        void audioDeviceStopped() override
+        {
+            recorder.audioDeviceStopped();
+            target.audioDeviceStopped();
+        }
         void audioDeviceError (const juce::String& message) override { target.audioDeviceError (message); }
 
         juce::AudioIODeviceCallback& target;
+        Recorder& recorder;
         std::atomic<double> sampleRate { 48000.0 };
         std::atomic<juce::int64> count { 0 }, total { 0 }, overBudget { 0 };
         std::atomic<double> sumMs { 0.0 }, maxMs { 0.0 }, budgetMs { 0.0 };
     };
 
-    TimedCallback timedCallback { player };
+    Recorder recorder;
+    TimedCallback timedCallback { player, recorder };
 
     juce::AudioProcessorGraph::Node::Ptr outputNode;
     juce::AudioProcessorGraph::Node::Ptr mixerNode;

@@ -8,7 +8,8 @@ hizo, cómo se verificó, problemas) en `docs/progress.md`. Usuario final: `READ
 ## Decisiones fijas (resumen de PLAN.md §0)
 
 - C++17, **JUCE 8.0.15** por CMake `FetchContent` (tag fijo en `cmake/juce.cmake`). cpp-httplib
-  v0.64.0 (header-only) para la API (`cmake/httplib.cmake`).
+  v0.64.0 (header-only) para la API (`cmake/httplib.cmake`). LAME 3.100 (tarball de SourceForge con
+  SHA-256 fijo, `cmake/lame.cmake`) como librería estática `mp3lame` para grabar MP3.
 - **Sólo VST3 de 64 bits** (nada de VST2/AU/LV2/CLAP).
 - **MSVC** (VS 2022 Build Tools) + **Ninja**. Nada de MinGW/clang. Runtime de MSVC **estático**
   (`CMAKE_MSVC_RUNTIME_LIBRARY`, `/MT`): el exe no depende de los redistribuibles.
@@ -31,15 +32,17 @@ CMakeLists.txt        targets VstPlayer (gui app) y ProjectRoundTripTest (ctest)
 cmake/                juce.cmake, httplib.cmake, msvc-flags.cmake (/W4 /permissive- /utf-8 /MP)
 src/Main.cpp          JUCEApplication: crea y destruye todo en orden; modos de línea de comandos
 src/app/              MainWindow (menús, archivo, atajos), AppSettings, CommandLine (modos sin GUI),
-                      OfflineRender (--render),
+                      OfflineRender (--render), RecordingSettings (opciones de grabación en settings.xml),
                       Translations (textos de JUCE en español), ProcessTools, *SelfTest (tests de GUI)
 src/engine/           AudioEngine, PluginManager (escaneo fuera de proceso), InstanceGraph, Instance,
-                      MidiRouter, MidiSourceProcessor, GainProcessor
+                      MidiRouter, MidiSourceProcessor, GainProcessor, Recorder (grabación de la salida),
+                      Mp3Writer (AudioFormatWriter sobre LAME)
 src/project/          Project (modelo, sólo juce_core), ProjectSerializer (JSON), ProjectController
                       (aplica/captura proyectos, sucio, autoguardado), RecentProjects
 src/api/              ApiServer (red, cpp-httplib, sin JUCE), ApiController (comandos, eventos)
 src/ui/               MainContent, InstancePanel (filas), AddInstanceDialog, PluginEditorWindow,
-                      PluginListWindow, MidiPortsWindow, LevelMeter, Theme (look and feel oscuro)
+                      PluginListWindow, MidiPortsWindow, RecordingSettingsWindow, LevelMeter, Theme
+                      (look and feel oscuro)
 resources/            ícono: icon.svg (48 px y más), icon-small.svg (16/32 px) y los PNG que pasa CMake
                       (ICON_BIG / ICON_SMALL; JUCE arma el .ico). Regenerar: node tools/render-icon.mjs
 tests/                ProjectRoundTripTest.cpp; fixtures/ = proyectos de prueba fijos (prueba-etapa5 con sus
@@ -118,6 +121,10 @@ ctest --test-dir build ; ctest --test-dir build-debug                       # ro
   otro hilo.
 - La API despacha al hilo de mensajes con `MessageManager::callAsync` y espera con timeout; se detiene
   antes que todo lo demás al cerrar (`Main.cpp::shutdown`).
+- Grabación (`Recorder`, dueño `AudioEngine`): el callback del dispositivo copia la salida a un FIFO
+  (`ThreadedWriter`, try-lock: nunca bloquea el hilo de audio); un `TimeSliceThread` codifica el MP3
+  (LAME) y escribe el WAV mientras se graba. `start` / `stop` sólo en el hilo de mensajes; un
+  `audioDeviceStopped` o un error de escritura la cortan de forma asíncrona (`AsyncUpdater`).
 - Estilo JUCE (llaves en línea propia, espacio antes de paréntesis de llamada), 4 espacios, LF, UTF-8.
 - Commits por etapa/cambio: `etapa N: …` durante el plan; mensajes en español.
 

@@ -64,8 +64,10 @@ van primero porque afectan el uso diario.
   LFOs / arpegiadores sincronizados usan su tempo interno), stems por instancia, y probarlo con
   sforzando con un instrumento cargado (el calentamiento a ritmo real está pensado para su carga de
   samples en segundo plano).
-- **Grabación a WAV** de la mezcla (y opcionalmente por instancia), con un `AudioFormatWriter` en un
-  hilo de fondo (`ThreadedWriter`).
+- **Grabación** (hecha: MP3 con LAME y WAV opcional de la mezcla, botón ● Grabar / Ctrl+R, API
+  `startRecording` / `stopRecording`). Falta: grabar por instancia (stems), modo "armado" que empieza
+  con la primera nota (sin silencio al principio), MP3 en `--render` (`--out x.mp3`, el mismo
+  `Mp3Writer`).
 - **MIDI clock**: hoy se descarta todo mensaje de sistema. Recibir clock/start/stop para plugins con
   arpegiadores o LFOs sincronizados (`AudioPlayHead` con tempo y posición).
 - **Windows MIDI Services** (MIDI 2.0 de Windows 11) como alternativa a loopMIDI: crea puertos

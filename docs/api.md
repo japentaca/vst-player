@@ -77,6 +77,7 @@ Proyecto, audio, instancias y rutas.
                  "gainDb":-12.0,"mute":false,"midiMix":{"volume":102,"pan":64},"editorOpen":false,"numParams":2855,"numPrograms":0,
                  "midiRoutes":[{"inputDevice":"loopMIDI Port","channels":[2,3],"instanceId":"5a1e...","channelMode":{"remapTo":1}}]}],
    "midiRoutes":[...],
+   "recording":{"active":false},
    "api":{"host":"127.0.0.1","port":9471,"clients":1,"version":1,"app":"0.1.0"}}
 ```
 `midiRoutes` (de todo el proyecto y por instancia): canales de origen, instancia destino y `keep` /
@@ -86,7 +87,8 @@ rutean nada, y un cliente que aplica las rutas por su cuenta podría leer `"chan
 `state`: `loading`, `ready`, `failed` (con `error`), `missing` (plugin no instalado). `midiMix`: los
 últimos CC7 (volumen) y CC10 (pan) que recibió la instancia, `null` si todavía no llegó ninguno (ver
 "Volumen y pan por MIDI"). `currentProgram`
-y `programName` aparecen si el plugin tiene programas.
+y `programName` aparecen si el plugin tiene programas. `recording`: la grabación en curso o la última
+(ver `startRecording`); `{"active": false}` si nunca se grabó.
 
 ### `loadProject`
 ```json
@@ -220,6 +222,37 @@ instancias nuevas (primer canal libre). Sirve para usar VstPlayer desde carrilio
 ningún dispositivo MIDI. Una ruta con puerto también cuenta para carrilion y para `midi` sin
 `instanceId` (todas las rutas cuentan, sea cual sea el puerto).
 
+### `startRecording` / `stopRecording`
+```json
+{"cmd":"startRecording"}                                            // opciones de settings.xml
+{"cmd":"startRecording","format":"cbr320","keepWav":true,"folder":"C:\\Grabaciones","name":"Ensayo"}
+→ {"ok":true,"recording":{"active":true,"file":"C:\\Grabaciones\\Ensayo 2026-11-02 21-35-07.mp3",
+   "mp3File":"...mp3","wavFile":"...wav","format":"cbr320","sampleRate":48000.0,"seconds":0.0,
+   "peakDb":-100.0,"clipped":false,"droppedSeconds":0.0,"startedAt":"2026-11-02T21:35:07.120-03:00"}}
+
+{"cmd":"stopRecording"}
+→ {"ok":true,"recording":{"active":false,"seconds":63.21,"peakDb":-3.4,...},"reason":"api",
+   "mp3Bytes":2023456,"wavBytes":24280000}
+```
+Graba lo que suena por la salida de audio, como el botón **● Grabar** de la UI (es la misma grabación:
+`stopRecording` detiene también una que se empezó desde la UI, y al revés). Todo es opcional en
+`startRecording`; lo que falta sale de **Audio → Opciones de grabación…** (`settings.xml`):
+
+- `format`: `cbr256` (por defecto), `cbr320`, `cbr192`, `vbr0` (VBR V0, ~245 kbps), `vbr2` (VBR V2,
+  ~190 kbps) o `wav` (sólo WAV). Otro valor → 400 `badRequest`.
+- `keepWav`: además del MP3, un WAV de 32 bits float.
+- `folder`: carpeta (absoluta, o relativa a la última carpeta de proyectos); por defecto la del
+  proyecto abierto, o `Documentos\VstPlayer\Grabaciones` si no tiene archivo.
+- `name`: reemplaza el nombre del proyecto en el archivo y en el título ID3.
+
+Archivo: `<nombre> AAAA-MM-DD HH-MM-SS.mp3` (y `.wav`), ` (2)` si ya existe. `mp3File` / `wavFile`
+son `null` si no se escriben. `peakDb`: pico de la mezcla grabada; `clipped: true` si pasó de 0 dBFS
+(el MP3 sale saturado). `droppedSeconds`: audio perdido porque el disco no daba abasto (normalmente
+0). Errores: `startRecording` mientras se graba → 409 `alreadyRecording`; `stopRecording` sin grabar →
+409 `notRecording`; sin dispositivo de audio, carpeta o archivo que no se pueden crear → 500 `failed`.
+Si el dispositivo de audio se reinicia (otro dispositivo, sample rate o buffer, por ejemplo al abrir
+un proyecto con otro bloque `audio`), la grabación se corta sola (`reason: "device"`, con `warning`).
+
 ### `levels` / `audioStats` (diagnóstico)
 ```json
 {"cmd":"levels"}
@@ -263,6 +296,8 @@ Llegan a todos los WebSockets abiertos como `{"event": "<nombre>", ...}` (sin `o
 | `paramChanged` | `instanceId`, `params: [{index, name, value, text}]`, `truncated?` | cambió algún parámetro (API, editor del plugin, automatización); **agrupado a 20 Hz por instancia**: como mucho 20 eventos por segundo y por instancia, con todos los parámetros que cambiaron en ese intervalo (máx. 256; `truncated: true` si hubo más: usar `listParams`) |
 | `projectLoaded` | `project`, `warnings`, `numInstances` | terminó de abrirse un proyecto (o "Nuevo") |
 | `midiActivity` | `instanceId`, `count` | llegó MIDI a la instancia (puertos o API, con o sin `instanceId`); como mucho 20 por segundo por instancia; `count` = total acumulado |
+| `recordingStarted` | `recording` (como en `startRecording`) | empezó una grabación (API o UI) |
+| `recordingStopped` | `recording`, `reason`, `mp3Bytes`, `wavBytes`, `warning?` | terminó: `reason` = `api`, `user` (botón / Ctrl+R), `device` (se reinició el dispositivo de audio) o `error` (no se pudo escribir, p. ej. disco lleno) |
 
 Ver "Valores viejos": los cambios internos de un plugin que no avisa al host no generan `paramChanged`.
 

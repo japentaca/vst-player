@@ -21,6 +21,7 @@ const juce::Colour ok           { 0xff57d16b };
 const juce::Colour warning      { 0xffffa53d };
 const juce::Colour error        { 0xffff5c5c };
 const juce::Colour panic        { 0xffb3262b };
+const juce::Colour record       { 0xffe5484d }; // record button (dot, background while recording)
 const juce::Colour mute         { 0xffd9a521 };
 } // namespace theme
 

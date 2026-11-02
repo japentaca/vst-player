@@ -17,7 +17,8 @@ class PluginManager;
 
 // Content of the main window (stage 6):
 //   - Top bar, line 1: project name ("*" when modified; the path in the tooltip), Nuevo,
-//     Abrir…, Recientes, Guardar, Guardar como…, and the Pánico button.
+//     Abrir…, Recientes, Guardar, Guardar como…, "● Grabar" (red with the elapsed time while
+//     recording; Ctrl+R) and the Pánico button.
 //     Line 2: audio device (button: opens the audio settings), sample rate / buffer / latency,
 //     audio CPU %, master output meter, "Puertos MIDI…", "Plugins…".
 //   - Centre: InstancePanel (instance rows, foldable virtual keyboard).
@@ -47,6 +48,7 @@ public:
     // Buttons (MainWindow connects them to the same actions as the menu).
     std::function<void()> onNew, onOpen, onRecent, onSave, onSaveAs;
     std::function<void()> onShowAudioSettings, onShowMidiPorts, onShowPlugins;
+    std::function<void()> onToggleRecording;
     // True while a plugin scan runs (status bar progress).
     std::function<bool()> isScanning;
     // Local API indicator in the status bar ("API: 127.0.0.1:9471, 1 cliente").
@@ -60,6 +62,9 @@ public:
     bool isProgressVisible() const { return progressBar.isVisible(); }
     juce::String getProgressText() const { return progressLabel.getText(); }
     juce::Button& getRecentButton() noexcept { return recentButton; }
+    juce::TextButton& getRecordButton() noexcept { return recordButton; }
+    // Updates the record button from the recorder (also done by the timer).
+    void refreshRecording();
     float getMasterMeterDb (int channel) const { return masterMeter.getLevelDb (channel); }
 
     void paint (juce::Graphics&) override;
@@ -79,6 +84,7 @@ private:
     // Top bar.
     juce::Label projectLabel;
     juce::TextButton newButton, openButton, recentButton, saveButton, saveAsButton;
+    juce::TextButton recordButton;
     juce::TextButton panicButton;
     juce::TextButton audioDeviceButton;
     juce::Label audioInfoLabel;

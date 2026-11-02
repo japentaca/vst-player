@@ -6,6 +6,7 @@
 #include "app/InstanceSelfTest.h"
 #include "app/MainWindow.h"
 #include "app/OfflineRender.h"
+#include "app/RecordingSettings.h"
 #include "app/Translations.h"
 #include "engine/AudioEngine.h"
 #include "engine/InstanceGraph.h"
@@ -319,6 +320,11 @@ private:
         {
             const juce::File folder (settings->getProperties().getValue ("lastProjectFolder"));
             return folder.isDirectory() ? folder : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+        };
+
+        apiController->getRecordingOptions = [this]
+        {
+            return RecordingSettings::load (settings->getProperties()).makeOptions (*projectController);
         };
 
         auto* api = apiController.get();

@@ -1,6 +1,7 @@
 #include "app/MainWindow.h"
 
 #include "app/AppSettings.h"
+#include "app/RecordingSettings.h"
 #include "engine/AudioEngine.h"
 #include "engine/PluginManager.h"
 #include "project/Project.h"
@@ -9,6 +10,7 @@
 #include "ui/MainContent.h"
 #include "ui/MidiPortsWindow.h"
 #include "ui/PluginListWindow.h"
+#include "ui/RecordingSettingsWindow.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
@@ -72,6 +74,7 @@ MainWindow::MainWindow (const juce::String& title, AppSettings& s, AudioEngine& 
     content->onRecent = [this] { showRecentMenu(); };
     content->onSave = [this] { saveProject(); };
     content->onSaveAs = [this] { saveProjectAs(); };
+    content->onToggleRecording = [this] { toggleRecording(); };
     content->isScanning = [this] { return pluginListWindow != nullptr && pluginListWindow->isScanning(); };
     setContentOwned (content.release(), true);
 
@@ -100,6 +103,7 @@ MainWindow::MainWindow (const juce::String& title, AppSettings& s, AudioEngine& 
                      project.getProjectName() + ":\n\n- " + warnings.joinIntoString ("\n- "), false);
     };
     project.addChangeListener (this);
+    engine.getRecorder().addListener (this);
     updateTitle();
 }
 
@@ -109,6 +113,7 @@ MainWindow::~MainWindow()
     setApplicationCommandManagerToWatch (nullptr);
     commandManager.setFirstCommandTarget (nullptr);
     project.removeChangeListener (this);
+    engine.getRecorder().removeListener (this);
     project.openEditor = nullptr;
     project.syncEditorWindows = nullptr;
     project.onLoadWarnings = nullptr;
@@ -116,6 +121,9 @@ MainWindow::~MainWindow()
 
     if (audioSettingsWindow != nullptr)
         delete audioSettingsWindow.getComponent();
+
+    if (recordingSettingsWindow != nullptr)
+        delete recordingSettingsWindow.getComponent();
 
     pluginListWindow = nullptr;
     midiPortsWindow = nullptr;
@@ -228,6 +236,33 @@ void MainWindow::confirmDiscardThen (std::function<void()> next)
 void MainWindow::requestQuit()
 {
     juce::Component::SafePointer<MainWindow> safeThis (this);
+
+    // Recording: ask first (the files are closed properly at shutdown either way).
+    if (engine.getRecorder().isRecording() && ! suppressDialogs)
+    {
+        if (recordQuitPromptShowing)
+            return;
+
+        recordQuitPromptShowing = true;
+        juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::QuestionIcon, juce::String::fromUTF8 ("Grabación en curso"),
+                                            juce::String::fromUTF8 ("Se está grabando. ¿Detener la grabación y salir?\n\n"
+                                                                    "Lo grabado hasta ahora queda guardado."),
+                                            juce::String::fromUTF8 ("Detener y salir"), "Cancelar", this,
+                                            juce::ModalCallbackFunction::create ([safeThis] (int result)
+                                            {
+                                                if (safeThis == nullptr)
+                                                    return;
+
+                                                safeThis->recordQuitPromptShowing = false;
+
+                                                if (result == 1)
+                                                {
+                                                    safeThis->stopRecording();
+                                                    safeThis->requestQuit();
+                                                }
+                                            }));
+        return;
+    }
 
     confirmDiscardThen ([safeThis]
     {
@@ -423,7 +458,7 @@ void MainWindow::showRecentMenu()
 //==============================================================================
 void MainWindow::getAllCommands (juce::Array<juce::CommandID>& commands)
 {
-    commands.addArray ({ cmdNew, cmdOpen, cmdSave, cmdSaveAs, cmdPanic });
+    commands.addArray ({ cmdNew, cmdOpen, cmdSave, cmdSaveAs, cmdPanic, cmdRecord });
 }
 
 void MainWindow::getCommandInfo (juce::CommandID commandID, juce::ApplicationCommandInfo& result)
@@ -457,6 +492,12 @@ void MainWindow::getCommandInfo (juce::CommandID commandID, juce::ApplicationCom
             result.addDefaultKeypress (juce::KeyPress::escapeKey, juce::ModifierKeys::noModifiers);
             break;
 
+        case cmdRecord:
+            result.setInfo (engine.getRecorder().isRecording() ? juce::String::fromUTF8 ("Detener grabación") : juce::String ("Grabar"),
+                            "Grabar lo que suena a un archivo MP3 / WAV", "Audio", 0);
+            result.addDefaultKeypress ('r', ctrl);
+            break;
+
         default:
             break;
     }
@@ -471,6 +512,7 @@ bool MainWindow::perform (const InvocationInfo& info)
         case cmdSave:   saveProject(); return true;
         case cmdSaveAs: saveProjectAs(); return true;
         case cmdPanic:  getInstancePanel().panic(); return true;
+        case cmdRecord: toggleRecording(); return true;
         default:        return false;
     }
 }
@@ -505,6 +547,117 @@ void MainWindow::showAudioSettings()
     options.resizable = true;
 
     audioSettingsWindow = options.launchAsync();
+}
+
+//==============================================================================
+RecordingSettings MainWindow::getRecordingSettings() const
+{
+    return recordingSettingsOverride ? recordingSettingsOverride() : RecordingSettings::load (settings.getProperties());
+}
+
+juce::File MainWindow::getRecordingFolder() const
+{
+    return getRecordingSettings().resolveFolder (project);
+}
+
+void MainWindow::toggleRecording()
+{
+    if (engine.getRecorder().isRecording())
+        stopRecording();
+    else
+        startRecording();
+}
+
+juce::Result MainWindow::startRecording()
+{
+    const auto options = getRecordingSettings().makeOptions (project);
+    const auto result = engine.startRecording (options);
+
+    if (result.failed())
+        showMessage ("No se pudo grabar", result.getErrorMessage(), true);
+
+    return result;
+}
+
+void MainWindow::stopRecording()
+{
+    if (engine.getRecorder().isRecording())
+        engine.getRecorder().stop (Recorder::StopReason::user);
+}
+
+void MainWindow::recordingStarted (const Recorder::Info& info)
+{
+    const auto file = info.mp3File != juce::File() ? info.mp3File : info.wavFile;
+    getMainContent().setStatus ("Grabando (" + info.format.getLabel() + "): " + file.getFullPathName());
+    getMainContent().refreshRecording();
+    commandManager.commandStatusChanged();
+}
+
+void MainWindow::recordingStopped (const Recorder::Result& result)
+{
+    getMainContent().refreshRecording();
+    commandManager.commandStatusChanged();
+
+    if (result.reason == Recorder::StopReason::shutdown)
+        return;
+
+    const auto& info = result.info;
+    const auto describe = [] (const juce::File& f, juce::int64 bytes)
+    {
+        return f.getFileName() + " (" + juce::File::descriptionOfSizeInBytes (bytes) + ")";
+    };
+
+    juce::StringArray files;
+
+    if (info.mp3File != juce::File())
+        files.add (describe (info.mp3File, result.mp3Bytes));
+
+    if (info.wavFile != juce::File())
+        files.add (describe (info.wavFile, result.wavBytes));
+
+    const auto total = (int) info.seconds;
+    const auto folder = (info.mp3File != juce::File() ? info.mp3File : info.wavFile).getParentDirectory();
+    auto text = "Grabado " + juce::String (total / 60) + ":" + juce::String (total % 60).paddedLeft ('0', 2) + ": "
+                + files.joinIntoString (", ") + " en " + folder.getFullPathName();
+
+    if (info.peak > 1.0f)
+        text << juce::String::fromUTF8 (" — la mezcla pasó de 0 dBFS (+")
+             << juce::String (juce::Decibels::gainToDecibels (info.peak), 1) << juce::String::fromUTF8 (" dB): el MP3 sale saturado");
+
+    if (info.droppedSamples > 0)
+        text << juce::String::fromUTF8 (" — se perdieron ") << juce::String (info.droppedSamples / juce::jmax (1.0, info.sampleRate), 2)
+             << " s de audio (disco lento)";
+
+    if (result.error.isNotEmpty())
+        showMessage (result.ok ? juce::String::fromUTF8 ("Grabación detenida") : juce::String::fromUTF8 ("Error de grabación"),
+                     result.error + "\n" + text, true);
+    else
+        getMainContent().setStatus (text, info.peak > 1.0f || info.droppedSamples > 0);
+}
+
+void MainWindow::showRecordingSettings()
+{
+    if (recordingSettingsWindow != nullptr)
+    {
+        recordingSettingsWindow->toFront (true);
+        return;
+    }
+
+    auto content = std::make_unique<RecordingSettingsComponent> (
+        RecordingSettings::load (settings.getProperties()),
+        [this] (const RecordingSettings& s) { return s.resolveFolder (project); });
+    content->onChange = [this] (const RecordingSettings& s) { s.save (settings.getProperties()); };
+
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned (content.release());
+    options.dialogTitle = juce::String::fromUTF8 ("Opciones de grabación");
+    options.dialogBackgroundColour = getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId);
+    options.componentToCentreAround = this;
+    options.escapeKeyTriggersCloseButton = true;
+    options.useNativeTitleBar = true;
+    options.resizable = false;
+
+    recordingSettingsWindow = options.launchAsync();
 }
 
 void MainWindow::showMidiPorts()
@@ -559,6 +712,10 @@ juce::PopupMenu MainWindow::getMenuForIndex (int topLevelMenuIndex, const juce::
         case audioMenu:
             menu.addItem (cmdAudioSettings, juce::String::fromUTF8 ("Configuración de audio…"));
             menu.addItem (cmdMidiPorts, juce::String::fromUTF8 ("Puertos MIDI…"));
+            menu.addSeparator();
+            menu.addCommandItem (&commandManager, cmdRecord);
+            menu.addItem (cmdRecordingSettings, juce::String::fromUTF8 ("Opciones de grabación…"));
+            menu.addItem (cmdOpenRecordingFolder, "Abrir carpeta de grabaciones");
             menu.addSeparator();
             menu.addCommandItem (&commandManager, cmdPanic);
             break;
@@ -617,6 +774,18 @@ void MainWindow::menuItemSelected (int menuItemID, int)
         case cmdAbout:
             showAboutBox();
             break;
+
+        case cmdRecordingSettings:
+            showRecordingSettings();
+            break;
+
+        case cmdOpenRecordingFolder:
+        {
+            const auto folder = getRecordingFolder();
+            folder.createDirectory();
+            folder.startAsProcess();
+            break;
+        }
 
         default:
             if (menuItemID >= cmdRecentBase && menuItemID < cmdRecentBase + 100)

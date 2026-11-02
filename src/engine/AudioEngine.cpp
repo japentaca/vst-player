@@ -23,6 +23,7 @@ AudioEngine::AudioEngine (AppSettings& s, bool persist)
 
 AudioEngine::~AudioEngine()
 {
+    recorder.stopSilently();
     deviceManager.removeChangeListener (this);
 
     if (callbackAttached)
@@ -254,6 +255,7 @@ void AudioEngine::TimedCallback::audioDeviceIOCallbackWithContext (const float* 
 {
     const auto start = juce::Time::getHighResolutionTicks();
     target.audioDeviceIOCallbackWithContext (in, numIn, out, numOut, numSamples, context);
+    recorder.processBlock (out, numOut, numSamples);
     const auto ms = juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - start) * 1000.0;
 
     const auto budget = 1000.0 * numSamples / sampleRate.load();
