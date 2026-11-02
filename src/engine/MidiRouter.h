@@ -60,7 +60,9 @@ class MidiRouter final : private InstanceGraph::Listener,
                          public juce::ChangeBroadcaster // ports or routes changed (async)
 {
 public:
-    explicit MidiRouter (InstanceGraph& graph);
+    // usePorts = false (offline render): keeps the routes (and the instance targets) but never
+    // lists, opens or watches MIDI input ports.
+    explicit MidiRouter (InstanceGraph& graph, bool usePorts = true);
     ~MidiRouter() override;
 
     //==============================================================================
@@ -164,6 +166,7 @@ private:
     static juce::String deviceListSignature (const juce::Array<juce::MidiDeviceInfo>& devices);
 
     InstanceGraph& graph;
+    const bool usePorts;
     std::vector<MidiRoute> routes;
     juce::uint64 editCounter = 0;
     bool monitorAll = false;

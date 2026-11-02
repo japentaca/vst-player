@@ -31,6 +31,7 @@ CMakeLists.txt        targets VstPlayer (gui app) y ProjectRoundTripTest (ctest)
 cmake/                juce.cmake, httplib.cmake, msvc-flags.cmake (/W4 /permissive- /utf-8 /MP)
 src/Main.cpp          JUCEApplication: crea y destruye todo en orden; modos de línea de comandos
 src/app/              MainWindow (menús, archivo, atajos), AppSettings, CommandLine (modos sin GUI),
+                      OfflineRender (--render),
                       Translations (textos de JUCE en español), ProcessTools, *SelfTest (tests de GUI)
 src/engine/           AudioEngine, PluginManager (escaneo fuera de proceso), InstanceGraph, Instance,
                       MidiRouter, MidiSourceProcessor, GainProcessor
@@ -40,7 +41,8 @@ src/api/              ApiServer (red, cpp-httplib, sin JUCE), ApiController (com
 src/ui/               MainContent, InstancePanel (filas), AddInstanceDialog, PluginEditorWindow,
                       PluginListWindow, MidiPortsWindow, LevelMeter, Theme (look and feel oscuro)
 tests/                ProjectRoundTripTest.cpp
-tools/                build.ps1, dev-env.ps1, package.ps1, register-filetype.ps1, run-*-test.ps1, api-test.mjs
+tools/                build.ps1, dev-env.ps1, package.ps1, register-filetype.ps1, run-*-test.ps1, api-test.mjs,
+                      render-test.mjs
 docs/                 progress.md, project-format.md, api.md, roadmap.md
 examples/             proyectos de ejemplo, sfz/, carrilion-client.js (embebido en el exe: GET /client.js)
 ```
@@ -70,6 +72,7 @@ ctest --test-dir build ; ctest --test-dir build-debug                       # ro
 & .\tools\run-project-test.ps1                                              # guardar / reabrir proyectos
 & .\tools\run-ui-test.ps1                                                   # layout, atajos, responsividad
 & .\tools\run-api-test.ps1                                                  # API (requiere Node 22+)
+& .\tools\run-render-test.ps1                                               # --render offline (Node 22+)
 # Debug: agregar -Config Debug y, donde se carga sforzando, -AllowedLeaks VST3HostContextHeadless,AsyncUpdater
 ```
 
@@ -83,6 +86,10 @@ ctest --test-dir build ; ctest --test-dir build-debug                       # ro
   salida de audio. Lo que requiere oír o tocar desde carrilion queda como verificación manual.
 - Herramientas de diagnóstico: `--midi-ports`, `--midi-monitor`, `--midi-send`, `--audio-devices`,
   `--audio-selftest`, `--scan`, `--plugin-folders`, `--add-plugin-folder`, `--remove-plugin-folder`.
+- Render offline: `--render <proyecto> --midi <archivo.mid> --out <archivo.wav>` (`src/app/OfflineRender`):
+  sin dispositivo, puertos, API ni ventana; settings y `plugins.xml` de sólo lectura; el grafo corre
+  `setNonRealtime` en un hilo propio y el MIDI entra por `MidiSourceProcessor::addOfflineMessage` (no
+  por el collector). stdout = una línea JSON; progreso en stderr. Contrato en `README.md`.
 - Carpetas de búsqueda de plugins: las estándar de VST3 (fijas) + `pluginExtraFolders` en
   `settings.xml`, manejadas por `PluginManager` (agregar / quitar / validar). El escaneo desde la UI
   pasa la lista de archivos a `PluginListComponent::scanFor`, sin el diálogo de carpetas de JUCE.

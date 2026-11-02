@@ -40,6 +40,10 @@ class AppSettings;
 //                                        input then receives it). <msg> = hex bytes separated by
 //                                        ':' (e.g. 90:3C:64 = note on ch 1, C3, vel 100) or +N to
 //                                        wait N ms. Exit 0 if every message was sent.
+//   VstPlayer.exe --render <project.vstproj.json> --midi <file.mid> --out <file.wav> [options]
+//                                        offline render of a project playing a Standard MIDI File
+//                                        to a WAV, without an audio device (see OfflineRender.h).
+//                                        Runs inside the message loop, not in runCommandLineMode.
 namespace cli
 {
 enum class Mode
@@ -54,13 +58,17 @@ enum class Mode
     audioDevices,
     midiSend,
     midiPorts,
-    midiMonitor
+    midiMonitor,
+    render
 };
 
 Mode detectMode (const juce::StringArray& args);
 
 // Writes a line to the parent console / redirected stdout (the app is a GUI-subsystem exe).
 void print (const juce::String& line);
+// Same for stderr (progress of --render, whose stdout carries only the JSON summary). When stderr
+// is not redirected it goes to the parent console, if any; never to a redirected stdout.
+void printError (const juce::String& line);
 
 // "--debug-to-stdout" (any mode): copies every OutputDebugString of the process (JUCE DBG,
 // "JUCE Assertion failure in ...", the leak detector at exit, plugins' own messages) to stdout

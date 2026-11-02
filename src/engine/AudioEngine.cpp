@@ -87,7 +87,7 @@ double AudioEngine::getSampleRate() const
     if (auto* device = deviceManager.getCurrentAudioDevice())
         return device->getCurrentSampleRate();
 
-    return 0.0;
+    return offlineSampleRate;
 }
 
 int AudioEngine::getBufferSize() const
@@ -95,7 +95,7 @@ int AudioEngine::getBufferSize() const
     if (auto* device = deviceManager.getCurrentAudioDevice())
         return device->getCurrentBufferSizeSamples();
 
-    return 0;
+    return offlineBufferSize;
 }
 
 juce::String AudioEngine::getDeviceTypeName() const

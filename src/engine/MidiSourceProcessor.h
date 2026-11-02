@@ -46,6 +46,16 @@ public:
 
     void requestPanic() noexcept { panicRequested.store (true); }
 
+    // Offline render only: a message for the next processBlock at an exact sample position
+    // (0 .. block size - 1). Not thread-safe: call it from the thread that runs the graph,
+    // between two blocks. Merged after the collector's messages (same position: these go
+    // last) and before CC7 / CC10 are taken out, so the mix controllers work as live.
+    void addOfflineMessage (const juce::MidiMessage& message, int samplePosition)
+    {
+        offlineMessages.addEvent (message, juce::jmax (0, samplePosition));
+        messagesQueued.fetch_add (1);
+    }
+
     // Not thread-safe: only before the processor is in the graph.
     void setMidiMix (std::shared_ptr<MidiMixControls> controls) { midiMix = std::move (controls); }
 
@@ -65,6 +75,7 @@ public:
     {
         collector.reset (sampleRate);
         filtered.ensureSize (4096); // no allocation on the audio thread for normal blocks
+        offlineMessages.ensureSize (4096);
     }
     void releaseResources() override {}
 
@@ -76,6 +87,7 @@ public:
         if (panicRequested.exchange (false))
         {
             collector.removeNextBlockOfMessages (midi, numSamples); // drop what was pending
+            offlineMessages.clear();
             midi.clear();
 
             for (int channel = 1; channel <= 16; ++channel)
@@ -88,6 +100,13 @@ public:
         else
         {
             collector.removeNextBlockOfMessages (midi, numSamples);
+
+            if (! offlineMessages.isEmpty())
+            {
+                midi.addEvents (offlineMessages, 0, numSamples, 0);
+                offlineMessages.clear();
+            }
+
             takeMixControllers (midi);
         }
 
@@ -177,6 +196,7 @@ private:
     juce::MidiMessageCollector collector;
     std::shared_ptr<MidiMixControls> midiMix;
     juce::MidiBuffer filtered;
+    juce::MidiBuffer offlineMessages; // addOfflineMessage, consumed by the next block
     std::atomic<juce::int64> mixControllersTaken { 0 };
     std::atomic<bool> panicRequested { false };
     std::atomic<juce::int64> messagesQueued { 0 };

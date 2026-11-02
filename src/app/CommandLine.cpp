@@ -40,6 +40,25 @@ HANDLE getOutputHandle()
     return handle;
 }
 
+HANDLE getErrorHandle()
+{
+    static HANDLE handle = []
+    {
+        auto h = GetStdHandle (STD_ERROR_HANDLE);
+
+        if (h == nullptr || h == INVALID_HANDLE_VALUE)
+        {
+            getOutputHandle(); // attaches to the parent console if stdout is not redirected either
+            AttachConsole (ATTACH_PARENT_PROCESS); // fails harmlessly when already attached / no console
+            h = CreateFileW (L"CONOUT$", GENERIC_WRITE, FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+        }
+
+        return h;
+    }();
+
+    return handle;
+}
+
 LONG WINAPI terminateOnCrash (EXCEPTION_POINTERS*)
 {
     // A plugin crashed inside the scanner child: die quietly, the parent blacklists the file.
@@ -87,12 +106,27 @@ Mode detectMode (const juce::StringArray& args)
     if (args.contains ("--midi-monitor"))
         return Mode::midiMonitor;
 
+    if (args.contains ("--render"))
+        return Mode::render;
+
     return Mode::gui;
 }
 
 void print (const juce::String& line)
 {
     const auto handle = getOutputHandle();
+
+    if (handle == nullptr || handle == INVALID_HANDLE_VALUE)
+        return;
+
+    const auto text = (line + "\r\n").toStdString(); // UTF-8
+    DWORD written = 0;
+    WriteFile (handle, text.data(), (DWORD) text.size(), &written, nullptr);
+}
+
+void printError (const juce::String& line)
+{
+    const auto handle = getErrorHandle();
 
     if (handle == nullptr || handle == INVALID_HANDLE_VALUE)
         return;

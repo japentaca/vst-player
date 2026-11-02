@@ -126,13 +126,13 @@ private:
 };
 } // namespace
 
-PluginManager::PluginManager (AppSettings& s)
-    : settings (s)
+PluginManager::PluginManager (AppSettings& s, bool shouldPersist)
+    : settings (s), persist (shouldPersist)
 {
     formatManager.addFormat (std::make_unique<juce::VST3PluginFormat>());
 
     // Keep the scan log small.
-    if (getScanLogFile().getSize() > 256 * 1024)
+    if (persist && getScanLogFile().getSize() > 256 * 1024)
         getScanLogFile().deleteFile();
 
     if (auto xml = juce::parseXML (getPluginListFile()))
@@ -143,6 +143,9 @@ PluginManager::PluginManager (AppSettings& s)
 
     knownPlugins.setCustomScanner (std::make_unique<OutOfProcessScanner> (childScanCount));
 
+    if (! persist)
+        return; // read-only: no listener (nothing is saved), settings untouched
+
     // Up to v0.1.0 the scan folders went through JUCE's folder dialog, which kept its own copy
     // of the list under this key. The folders now live only in "pluginExtraFolders".
     settings.getProperties().removeValue ("lastPluginScanPath_VST3");
@@ -152,7 +155,9 @@ PluginManager::PluginManager (AppSettings& s)
 PluginManager::~PluginManager()
 {
     knownPlugins.removeChangeListener (this);
-    save();
+
+    if (persist)
+        save();
 }
 
 juce::AudioPluginFormat& PluginManager::getVst3Format()

@@ -54,6 +54,11 @@ public:
     // there were none.
     std::function<void (const juce::StringArray& warnings)> onLoadWarnings;
 
+    // Offline render (--render): apply() ignores the project's "audio" block (no audio device is
+    // opened) and does not warn about MIDI input ports that are not connected (every route counts
+    // offline, whatever its port).
+    bool offlineRender = false;
+
     //==============================================================================
     juce::String getProjectName() const { return projectName; }
     juce::File getProjectFile() const { return projectFile; }

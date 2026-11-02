@@ -25,11 +25,17 @@ juce::String MidiRoute::describeChannels (juce::uint16 mask)
 }
 
 //==============================================================================
-MidiRouter::MidiRouter (InstanceGraph& g)
-    : graph (g)
+MidiRouter::MidiRouter (InstanceGraph& g, bool shouldUsePorts)
+    : graph (g), usePorts (shouldUsePorts)
 {
     log.resize ((size_t) kLogSize);
     graph.addListener (this);
+
+    if (! usePorts)
+    {
+        syncTargets();
+        return;
+    }
 
     juce::WeakReference<MidiRouter> weakThis (this);
     deviceListConnection = juce::MidiDeviceListConnection::make ([weakThis]
@@ -211,6 +217,13 @@ juce::String MidiRouter::deviceListSignature (const juce::Array<juce::MidiDevice
 void MidiRouter::refreshDevices()
 {
     JUCE_ASSERT_MESSAGE_THREAD
+
+    if (! usePorts)
+    {
+        rebuildDispatch(); // no ports: the table stays empty
+        sendChangeMessage();
+        return;
+    }
 
     const auto devices = juce::MidiInput::getAvailableDevices();
     lastDevices = devices;

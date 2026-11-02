@@ -379,7 +379,7 @@ void ProjectController::apply (const project::Project& p, const juce::File& file
     loadedRoutes = p.midiRoutes;
 
     // Audio first, so the plugins are created at the project's sample rate.
-    if (p.audio.present)
+    if (p.audio.present && ! offlineRender)
         warnings.addArray (engine.applyDeviceSetup (p.audio.deviceType, p.audio.outputDevice, p.audio.sampleRate, p.audio.bufferSize));
 
     std::map<juce::String, InstanceId> idMap; // file id -> id in the graph (differs only for duplicates)
@@ -445,7 +445,7 @@ void ProjectController::apply (const project::Project& p, const juce::File& file
 
         if (graph.findInstance (route.instanceId) == nullptr)
             warnings.add ("La ruta MIDI de \"" + data.inputDevice + "\" apunta a una instancia que no existe (" + data.instanceId + ").");
-        else if (data.inputDevice.isNotEmpty() && ! router.getAvailableInputNames().contains (data.inputDevice))
+        else if (! offlineRender && data.inputDevice.isNotEmpty() && ! router.getAvailableInputNames().contains (data.inputDevice))
             warnings.add ("El puerto MIDI \"" + data.inputDevice
                           + juce::String::fromUTF8 ("\" no existe ahora; la ruta queda inactiva hasta que aparezca."));
     }

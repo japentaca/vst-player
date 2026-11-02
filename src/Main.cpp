@@ -5,6 +5,7 @@
 #include "app/CommandLine.h"
 #include "app/InstanceSelfTest.h"
 #include "app/MainWindow.h"
+#include "app/OfflineRender.h"
 #include "app/Translations.h"
 #include "engine/AudioEngine.h"
 #include "engine/InstanceGraph.h"
@@ -47,6 +48,20 @@ public:
         // may run next to a normal VstPlayer.
         if (const auto dataDirArg = valueOf (args, kDataDirFlag); dataDirArg.isNotEmpty())
             AppSettings::setUserDataDirectoryOverride (juce::File::getCurrentWorkingDirectory().getChildFile (dataDirArg));
+
+        if (mode == cli::Mode::render)
+        {
+            // Needs the message loop (plugins are created on the message thread, one at a
+            // time): finishes asynchronously and quits with its exit code. No window.
+            offlineRender = std::make_unique<OfflineRender> (args);
+            offlineRender->onFinished = [this] (int exitCode)
+            {
+                setApplicationReturnValue (exitCode);
+                quit();
+            };
+            offlineRender->start();
+            return;
+        }
 
         if (mode != cli::Mode::gui)
         {
@@ -157,6 +172,14 @@ public:
     {
         // Every quit path (close button, Archivo > Salir, WM_CLOSE, logoff) ends here.
         selfTest = nullptr;
+
+        if (offlineRender != nullptr)
+        {
+            if (! offlineRender->isFinished())
+                setApplicationReturnValue (OfflineRender::kExitRenderError); // interrupted
+
+            offlineRender = nullptr;
+        }
 
         // The API first: stops its network threads before anything they use goes away.
         if (mainWindow != nullptr)
@@ -378,6 +401,7 @@ private:
     std::unique_ptr<MainWindow> mainWindow;
     std::unique_ptr<ApiController> apiController;
     std::unique_ptr<InstanceSelfTest> selfTest;
+    std::unique_ptr<OfflineRender> offlineRender;
     bool isSelfTest = false;
 
     static constexpr const char* kInstanceSelfTestFlag = "--instance-selftest";

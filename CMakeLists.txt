@@ -31,6 +31,7 @@ target_sources(VstPlayer PRIVATE
     src/app/CommandLine.cpp
     src/app/InstanceSelfTest.cpp
     src/app/MidiSelfTest.cpp
+    src/app/OfflineRender.cpp
     src/app/ProjectSelfTest.cpp
     src/app/ProcessTools.cpp
     src/app/Translations.cpp

@@ -23,7 +23,10 @@ class AppSettings;
 class PluginManager final : private juce::ChangeListener
 {
 public:
-    explicit PluginManager (AppSettings& settings);
+    // persist = false (offline render): read-only. Neither plugins.xml nor settings.xml is ever
+    // written (no save on changes or at destruction, no settings clean-up, the scan log is left
+    // alone). Scanning or editing folders in that mode is not supported.
+    explicit PluginManager (AppSettings& settings, bool persist = true);
     ~PluginManager() override;
 
     juce::AudioPluginFormatManager& getFormatManager() noexcept { return formatManager; }
@@ -95,6 +98,7 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
 
     AppSettings& settings;
+    const bool persist;
     std::atomic<int> childScanCount { 0 };
 
     juce::AudioPluginFormatManager formatManager;

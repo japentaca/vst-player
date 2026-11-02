@@ -1258,3 +1258,96 @@ cambiados `CMakeLists.txt`, `src/Main.cpp`, `src/app/MainWindow.{h,cpp}`, `src/a
 **Pendiente:**
 - Verificación manual de oído con carrilion tocando (volumen y pan de los canales en Dexed y Surge XT).
 - La fila no muestra el volumen/pan MIDI recibido (sólo `status` de la API y los vúmetros L/R).
+
+## Después de v0.1.0 — Render offline (`--render`)  (2026-11-01)
+
+**Qué se hizo:** modo de línea de comandos que toca un proyecto con un archivo MIDI estándar y escribe
+un WAV, sin dispositivo de audio, más rápido que en tiempo real y con cada mensaje en su muestra exacta.
+Es el contrato con carrilion (etapa 4 de su plan: su render offline captura el MIDI que mandaría a
+VstPlayer, lo escribe como SMF, llama a `--render` y usa el WAV).
+
+```
+VstPlayer.exe --render <proyecto.vstproj.json> --midi <archivo.mid> --out <archivo.wav>
+              [--sample-rate 44100] [--block 512] [--warmup 2] [--tail-max 60] [--data-dir <carpeta>]
+```
+
+- `src/app/OfflineRender.{h,cpp}` (nuevo). Usa los mismos objetos que la app (`AudioEngine` sin
+  `initialise()`: no se abre el `AudioDeviceManager`; `InstanceGraph`, `MidiRouter`,
+  `ProjectController`), dentro del bucle de mensajes de JUCE (los VST3 se crean en el hilo de mensajes
+  con la cola de carga de siempre) pero sin ventana ni API. `Main.cpp` lo crea en `initialise()` y sale
+  con su código cuando termina.
+- Sin escribir nada en la carpeta de datos: `PluginManager (settings, false)` de sólo lectura (no guarda
+  `plugins.xml` ni toca `settings.xml` ni el log de escaneo), `ProjectController` sin carpeta (recientes
+  en memoria, sin autoguardado) y con `offlineRender = true` (ignora el bloque `audio` del proyecto y
+  no avisa por puertos MIDI no conectados), `MidiRouter (graph, false)` (no lista ni abre puertos).
+  Falla si no hay `plugins.xml`.
+- Carga: espera a que todas las instancias terminen (timeout 120 s). **Una instancia faltante o que
+  falla es error** (exit 1, `{"ok":false,...}`): para la radio de carrilion es mejor no publicar un
+  render al que le falta un instrumento que publicarlo incompleto. Los demás avisos de carga (estado
+  base64 inválido, parámetros desconocidos) van a `warnings`.
+- Formato: `AudioEngine::setOfflineFormat` hace que los plugins se creen ya a la frecuencia del render;
+  `graph.setNonRealtime (true)` y `prepareToPlay (sr, block)` en el hilo de mensajes (JUCE lo exige
+  para VST3; el plugin recibe `processMode = kOffline`). Latencia del grafo compensada (se descartan
+  las primeras muestras; con Dexed / Surge XT es 0).
+- Render en un hilo propio (el grafo no se toca desde el hilo de mensajes mientras tanto): primero
+  `--warmup` segundos de silencio **a ritmo real** que se descartan (plugins que cargan samples en
+  segundo plano), después el MIDI en bloques de `--block` muestras.
+- MIDI: `juce::MidiFile` (tipo 0 y 1), `convertTimestampTicksToSeconds` (mapa de tempo); sin note-offs
+  agregados; meta, sysex y mensajes de sistema ignorados. Tiempo 0 del archivo = primera muestra del
+  WAV. Ruteo como la entrada por puerto pero con **las rutas de todos los puertos** (la misma tabla que
+  arma `vstplayer-port.js` de carrilion): un mensaje del canal c va una vez a cada (instancia, canal
+  de salida) cuya ruta toma c, con `keep` / `remapTo`; seguimiento de notas sostenidas como el router
+  en vivo (un re-ataque sin note-off recibe un note-off antes). Entrega exacta:
+  `MidiSourceProcessor::addOfflineMessage (mensaje, posición)` (buffer propio, consumido en el bloque
+  siguiente, antes de sacar CC7 / CC10: volumen y pan se aplican igual que en vivo). El camino en vivo
+  (`MidiMessageCollector` con timestamps de reloj) no cambia.
+- Cola (la regla de `tools/render/page.js` de carrilion): después del último evento sigue hasta que la
+  mezcla pasa 2 s seguidos por debajo de −70 dBFS (0.000316), como mucho `--tail-max` s; el archivo
+  termina 0,5 s después de la última muestra audible, nunca antes del último evento.
+- Salida: WAV estéreo float 32 de la mezcla (`WavAudioFormat`, `TemporaryFile` al lado del destino y
+  renombrado al final; ante un error no queda nada). stdout: **una línea JSON**; progreso en stderr
+  (`cli::printError`, nuevo: usa el stderr heredado y, si no hay, la consola del padre; nunca un stdout
+  redirigido). Con `--debug-to-stdout` también salen líneas `[debug] …`: el resumen es la última línea
+  que no empieza con `[debug]`.
+  - Éxito: `{"ok":true,"out","frames","sampleRate","blockSize","seconds","lastEventSeconds",
+    "tailSeconds","peakDb","midiFileType","midiEvents","midiRouted","midiUnrouted","deliveries",
+    "warmupSeconds","latencySamples","renderMs","totalMs","instances":[{"id","name","plugin",
+    "midiEvents","mixControllers","noteOns":[16],"peakDb"}],"warnings":[…]}`.
+  - Error: `{"ok":false,"error":"…","warnings":[…]}`. Exit 0 = bien, 1 = error del render (proyecto,
+    plugins, escritura, timeout), 2 = argumentos o archivos de entrada inválidos.
+
+**Archivos:** `src/app/OfflineRender.{h,cpp}` (nuevo), `src/Main.cpp`, `src/app/CommandLine.{h,cpp}`,
+`src/engine/{MidiSourceProcessor.h,MidiRouter.{h,cpp},AudioEngine.{h,cpp},PluginManager.{h,cpp}}`,
+`src/project/ProjectController.{h,cpp}`, `CMakeLists.txt`, `tools/run-render-test.ps1` y
+`tools/render-test.mjs` (nuevos), `README.md`, `CLAUDE.md`, `docs/roadmap.md`.
+
+**Verificación:**
+- `tools/run-render-test.ps1` (nuevo; Node lanza el exe con stdio por pipes, como lo hará carrilion):
+  proyecto de prueba con dos Dexed (ruta canal 1 → DexA `keep` por "loopMIDI Port"; canal 3 → DexB
+  `remapTo 2` por un puerto que no existe) y un bloque `audio` con un dispositivo inexistente. 75
+  comprobaciones: exit 0, stdout = una línea JSON, progreso en stderr, WAV estéreo float 32 a 44100,
+  frames del resumen = WAV; silencio exacto antes de la nota y ataque a +1,07 ms de 0,5 s (Dexed calcula
+  en sub-bloques de 64 muestras); mapa de tempo (tipo 1, 120 → 60 bpm: ataque a 1,500 s y no a 1,25 s,
+  con `--block 480`); remap (DexB recibe el note-on por el canal 2, DexA nada); CC7 = 0 deja DexA en
+  −100 dBFS y no llega al plugin; canal sin ruta → silencio, aviso y el WAV termina en el último evento;
+  fin del archivo 0,5 s después del último sonido > −70 dBFS; reemplazo de un archivo existente; errores
+  (MIDI inexistente o inválido y `--sample-rate` inválido → exit 2; plugin faltante → exit 1, sin WAV);
+  sin temporales sobrantes; la carpeta `--data-dir` (copia de `plugins.xml` y `settings.xml`) queda igual
+  byte a byte y con las mismas fechas. Un render de 1,5 s de MIDI tarda ~2,4 s en total (carga ~0,9 s +
+  calentamiento 2 s; el render en sí ~0,1 s).
+- Determinismo: dos renders del mismo MIDI tienen los mismos frames y difieren en a lo sumo 3,05e-5
+  (1 LSB de 16 bits) en ~1700 muestras desde el ataque: es Dexed (igual en Release y Debug).
+- Build Release y Debug sin warnings. Suite completa, Release y Debug: `ctest`, `--instance-selftest`,
+  `--midi-selftest`, `run-project-test.ps1`, `run-ui-test.ps1`, `run-api-test.ps1` (96/96) y
+  `run-render-test.ps1` (75/75): OK, 0 aserciones; en Debug sólo las fugas conocidas de sforzando
+  (`VST3HostContextHeadless`, `AsyncUpdater`; el render test no carga sforzando y no tiene ninguna).
+
+**Pendiente:**
+- carrilion (etapa 4 de su plan, otro agente): capturar el MIDI, escribir el SMF, llamar a `--render`.
+- No hay `AudioPlayHead` (tempo / posición) en el render: plugins con LFOs o arpegiadores sincronizados
+  usan su tempo interno. Tampoco en vivo.
+- No se probó con sforzando con un instrumento de samples (para eso está el calentamiento a ritmo real).
+- `examples/prueba-etapa5.vstproj.json`: el commit anterior (1e4ae93) lo guardó con 2 instancias (sin
+  "Sampler"), y `run-api-test.ps1` espera las 3 de la etapa 5 (falla con 4 errores en HEAD sin este
+  cambio). La suite de esta sección se corrió con la versión de la etapa 5 (32988de) en el árbol de
+  trabajo; ese archivo no se toca en este commit (decide el usuario).

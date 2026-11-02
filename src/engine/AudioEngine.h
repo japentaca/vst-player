@@ -31,8 +31,15 @@ public:
     juce::AudioProcessorGraph& getGraph() noexcept { return graph; }
     juce::AudioProcessorPlayer& getPlayer() noexcept { return player; }
 
+    // The device's, or (no device open) the offline format, 0 if none was set.
     double getSampleRate() const;
     int getBufferSize() const;
+    // Offline render: the format plugins are created with while no device is open.
+    void setOfflineFormat (double sampleRate, int bufferSize) noexcept
+    {
+        offlineSampleRate = sampleRate;
+        offlineBufferSize = bufferSize;
+    }
     juce::String getDeviceTypeName() const;
     juce::String getDeviceName() const;
     // Output latency in samples as reported by the device (0 if closed).
@@ -110,6 +117,8 @@ private:
     juce::AudioProcessorGraph::Node::Ptr mixerNode;
 
     bool callbackAttached = false;
+    double offlineSampleRate = 0.0;
+    int offlineBufferSize = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioEngine)
 };

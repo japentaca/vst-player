@@ -150,9 +150,40 @@ compilar con el SDK de Steinberg (ver "Cómo compilar").
 | `--api-port <n>`, `--api-token <t>`, `--no-api` | configuración de la API para esta ejecución |
 | `--midi-ports`, `--midi-monitor [s]`, `--midi-send "<puerto>" 90:3C:64 +100 80:3C:00` | diagnóstico MIDI (listar, escuchar, enviar) |
 | `--audio-devices` | lista los dispositivos de audio y sus buffers |
+| `--render <proyecto> --midi <archivo.mid> --out <archivo.wav> [opciones]` | render offline a WAV, sin dispositivo de audio (ver abajo) |
 
 La salida de texto se ve al redirigirla (`VstPlayer.exe --midi-ports > puertos.txt`) o desde una
 consola.
+
+## Render offline (`--render`)
+
+Toca un proyecto con un archivo MIDI estándar y escribe el resultado en un WAV, sin abrir el
+dispositivo de audio ni los puertos MIDI, más rápido que en tiempo real y con cada mensaje en su
+muestra exacta. Lo usa carrilion para que los canales que mandan MIDI a VstPlayer suenen en sus
+renders.
+
+```
+VstPlayer.exe --render proyecto.vstproj.json --midi eventos.mid --out salida.wav
+              [--sample-rate 44100] [--block 512] [--warmup 2] [--tail-max 60] [--data-dir <carpeta>]
+```
+
+- El proyecto se carga como en la app (plugins de `plugins.xml`, estado, parámetros, ganancia, mute y
+  rutas MIDI); el bloque `audio` del proyecto se ignora. Si una instancia no carga (plugin faltante o
+  que falla) el render **falla** (exit 1). No escribe nada en la carpeta de datos.
+- MIDI de tipo 0 o 1, con su mapa de tempo; el tiempo 0 del archivo es la primera muestra del WAV. Cada
+  mensaje pasa por las rutas MIDI del proyecto **de todos los puertos** (canales de origen, `keep` /
+  `remapTo`), como si llegara por el puerto; CC7 / CC10 se aplican como volumen / pan de la instancia.
+  Mensajes de sistema, sysex y meta se ignoran.
+- `--warmup`: segundos de silencio procesados a ritmo real y descartados antes de empezar (plugins que
+  cargan samples en segundo plano). `--block`: tamaño de bloque del render.
+- Cola: después del último evento sigue hasta que la mezcla queda por debajo de −70 dBFS (2 s
+  seguidos), y el archivo termina 0,5 s después de la última muestra audible (nunca antes del último
+  evento, como mucho `--tail-max` segundos después).
+- Salida: WAV estéreo float de 32 bits de la mezcla, escrito en un temporal y renombrado al final.
+- stdout: **una línea JSON** al terminar, `{"ok":true,"frames":…,"sampleRate":…,"seconds":…,
+  "lastEventSeconds":…,"tailSeconds":…,"peakDb":…,"instances":[…],"warnings":[…],…}` o
+  `{"ok":false,"error":"…"}`; el progreso va a stderr. Exit 0 = bien, 1 = error del render (proyecto,
+  plugins, escritura), 2 = argumentos o archivos de entrada inválidos.
 
 ## Cómo compilar
 

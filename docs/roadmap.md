@@ -52,6 +52,10 @@ van primero porque afectan el uso diario.
   a salidas físicas.
 - **Efectos en cadena por instancia** (inserts VST3 después del instrumento) y quizás envíos a buses
   de efectos compartidos.
+- **Render offline** (`--render`, ya existe): falta `AudioPlayHead` con tempo y posición (plugins con
+  LFOs / arpegiadores sincronizados usan su tempo interno), stems por instancia, y probarlo con
+  sforzando con un instrumento cargado (el calentamiento a ritmo real está pensado para su carga de
+  samples en segundo plano).
 - **Grabación a WAV** de la mezcla (y opcionalmente por instancia), con un `AudioFormatWriter` en un
   hilo de fondo (`ThreadedWriter`).
 - **MIDI clock**: hoy se descarta todo mensaje de sistema. Recibir clock/start/stop para plugins con
